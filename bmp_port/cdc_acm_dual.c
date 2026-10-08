@@ -27,6 +27,8 @@
 #include "usbd_cdc_acm.h"
 #include "usb_config.h"
 
+#include "ch32v30x.h" /* NVIC_DisableIRQ()/USBHS_IRQn for the GDB pipe locking */
+
 #include "board.h"
 #include "general.h" /* platform_support.h requires this to be included first */
 #include "platform.h"
@@ -57,35 +59,44 @@
 #define USB_CONFIG_SIZE  (9 + GDB_CDC_DESC_LEN + AUX_CDC_DESC_LEN + DFU_IF_DESC_LEN)
 
 /*
- * The host-facing ring buffer must hold one worst case GDB packet in full,
- * otherwise gdb_if_putchar() drops bytes and GDB never sees the end of the
- * packet ("Ignoring packet error, continuing...").
+ * Every GDB reply has to fit into a single USB packet, and GDB_PACKET_BUFFER_SIZE
+ * is what limits a reply (the stub announces it as PacketSize, so GDB keeps its
+ * requests - including the target description XML chunks - inside it).
  *
  * gdb_packet_send() writes, for one packet:
- *     '$' + payload + '#' + 2 checksum digits = packet->size + 4 bytes
- * and gdb_put_packet() allows packet->size up to GDB_PACKET_BUFFER_SIZE, with
- * gdb_if_putchar_escaped() able to double the payload.  Sizing the ring to
- * exactly GDB_PACKET_BUFFER_SIZE (the previous value) left only
- * GDB_PACKET_BUFFER_SIZE - 1 usable slots, so every maximum size reply lost
- * its trailing checksum - which is exactly what the RISC-V target description
- * XML (~4.5 KB, sent in maximum size chunks), the memory map and large 'm'
- * reads are.  The documented size below therefore covers the escaped worst
- * case; a smaller one is a build error.
+ *     '$' + escaped payload + '#' + 2 checksum digits
+ * so a reply is at most GDB_PACKET_BUFFER_SIZE + 4 bytes on the wire.
+ *
+ * Why it must stay within one packet: the CH32V30x USBHS device driver copies
+ * only the first max-packet-size chunk into the endpoint, and a longer transfer
+ * has to be continued from its interrupt (as do the completion callbacks).  On
+ * this port such transfers have repeatedly stopped after that first chunk and
+ * only finished once the host sent the next request, which the host reports as
+ * "Ignoring packet error, continuing..." - and, because the packet that got
+ * delayed then arrives as the answer to the *next* request, as
+ * "Truncated register N in remote 'g' packet" for the register read that
+ * followed it.  The first reply large enough to trigger this is the RISC-V
+ * target description XML (about 4.5 KB, which GDB asks for in maximum size
+ * chunks right after attach), so 'mon jt' always looked fine while 'att 1'
+ * always failed.
+ *
+ * Keeping GDB_PACKET_BUFFER_SIZE at 496 means no reply ever needs more than one
+ * packet, so the send path below never depends on that continuation nor on its
+ * completion callback.  Raise it once the controller driver is fixed: see
+ * README, "已知问题：GDB 长回复卡住", for the analysis and the deferred fix.
  */
 #ifndef GDB_PACKET_BUFFER_SIZE
-#define GDB_PACKET_BUFFER_SIZE 2048U
+#define GDB_PACKET_BUFFER_SIZE 496U
 #endif
-/* 8192 = the smallest power of two that covers 2 * (2048 + 8), see above. */
-#define GDB_BUF_SIZE  8192U
-#define GDB_BUF_MASK  (GDB_BUF_SIZE - 1U)
 
-/* GDB_BUF_MASK relies on the size being a power of two, and the size has to
- * cover one escaped maximum size packet plus its framing. */
-#if (GDB_BUF_SIZE & GDB_BUF_MASK) != 0U
-#error "GDB_BUF_SIZE must be a power of two"
-#endif
-#if GDB_BUF_SIZE < (2U * (GDB_PACKET_BUFFER_SIZE + 8U))
-#error "GDB_BUF_SIZE too small for one escaped maximum size GDB packet"
+/* One escaped maximum size packet plus framing, i.e. the most gdb_if_putchar()
+ * can stage for one reply (it can double every payload byte). */
+#define GDB_IN_BUF_SIZE (2U * (GDB_PACKET_BUFFER_SIZE + 8U))
+
+/* A reply plus '$', '#' and the two checksum digits must stay inside one USB
+ * packet, see the comment above. */
+#if (GDB_PACKET_BUFFER_SIZE + 4U) > USB_XFER_SIZE
+#error "GDB_PACKET_BUFFER_SIZE must keep a whole reply inside one USB packet"
 #endif
 
 /* GDB, host -> probe */
@@ -94,11 +105,14 @@ static volatile uint32_t gdb_out_len;
 static volatile uint32_t gdb_out_pos;
 static volatile bool gdb_out_armed;
 
-/* GDB, probe -> host (ring buffer, pushed in USB_XFER_SIZE chunks) */
+/*
+ * GDB, probe -> host.  gdb_if_putchar() stages one reply in gdb_in_buf and
+ * gdb_in_send() copies it into gdb_in_xfer, so the staging buffer is free again
+ * while the reply is still being read out by the host.
+ */
+static USB_MEM_ALIGNX uint8_t gdb_in_buf[GDB_IN_BUF_SIZE];
+static uint32_t gdb_in_len;
 static USB_MEM_ALIGNX uint8_t gdb_in_xfer[USB_XFER_SIZE];
-static uint8_t gdb_in_buf[GDB_BUF_SIZE];
-static volatile uint32_t gdb_in_head;
-static volatile uint32_t gdb_in_tail;
 static volatile bool gdb_in_busy;
 
 /* target UART, host -> target */
@@ -367,7 +381,28 @@ static const struct usb_msosv1_descriptor msosv1 = {
  * One bulk transfer at a time in each direction: the OUT pipe is re-armed once
  * its staging buffer has been drained (which flow-controls the host), the IN
  * side drains a ring buffer in USB_XFER_SIZE chunks.
+ *
+ * The endpoint bookkeeping and the ring indices are shared with the USB
+ * interrupt callbacks below, and both sides arm the next transfer when they see
+ * the previous one has finished.  That check-then-arm has to be serialised:
+ * without it a completion callback landing inside the GDB loop's version arms
+ * the same endpoint twice (the second start_write is rejected) and the chunk the
+ * loop just filled can end up never being sent - which the host sees as a reply
+ * that stops mid-packet, i.e. "Ignoring packet error, continuing..." followed by
+ * "Truncated register N in remote 'g' packet" when it was a register read.
+ * Only the USB interrupt is masked here, so the bit-banged SWD/JTAG timing is
+ * not affected (the callbacks cannot preempt themselves either).
  * ------------------------------------------------------------------ */
+static inline void gdb_usb_enter(void)
+{
+    NVIC_DisableIRQ(USBHS_IRQn);
+}
+
+static inline void gdb_usb_exit(void)
+{
+    NVIC_EnableIRQ(USBHS_IRQn);
+}
+
 static void gdb_out_arm(void)
 {
     if (gdb_out_armed || (gdb_out_pos < gdb_out_len)) {
@@ -381,29 +416,59 @@ static void gdb_out_arm(void)
 
 static int gdb_out_pop(void)
 {
+    int c = -1;
+
+    gdb_usb_enter();
     if (gdb_out_pos >= gdb_out_len) {
         gdb_out_arm();
-        return -1;
+    } else {
+        c = gdb_out_xfer[gdb_out_pos++];
     }
-    return gdb_out_xfer[gdb_out_pos++];
+    gdb_usb_exit();
+
+    return c;
 }
 
-static void gdb_in_kick(void)
+static void gdb_in_send(void)
 {
-    uint32_t count = 0U;
-
-    if (gdb_in_busy) {
+    if (gdb_in_len == 0U) {
         return;
     }
-    while ((count < sizeof(gdb_in_xfer)) && (gdb_in_tail != gdb_in_head)) {
-        gdb_in_xfer[count++] = gdb_in_buf[gdb_in_tail];
-        gdb_in_tail = (gdb_in_tail + 1U) & GDB_BUF_MASK;
+
+    if (gdb_in_len > sizeof(gdb_in_xfer)) {
+        /* Unreachable: the build keeps every reply inside one USB packet and
+         * gdb_if_putchar() stages at most GDB_IN_BUF_SIZE bytes.  Drop rather
+         * than hand the controller a length it would read past the buffer. */
+        gdb_in_len = 0U;
+        return;
     }
-    if (count == 0U) {
+
+    gdb_usb_enter();
+    for (uint32_t i = 0U; i < gdb_in_len; i++) {
+        gdb_in_xfer[i] = gdb_in_buf[i];
+    }
+    const uint32_t length = gdb_in_len;
+    gdb_in_len = 0U;
+    if (usbd_ep_start_write(0, GDB_IN_EP, gdb_in_xfer, length) < 0) {
+        /* Nothing was queued (e.g. the endpoint is not enabled yet): the reply
+         * is lost, which is no worse than re-sending a packet whose beginning
+         * the host has already parsed. */
+        gdb_usb_exit();
         return;
     }
     gdb_in_busy = true;
-    usbd_ep_start_write(0, GDB_IN_EP, gdb_in_xfer, count);
+    gdb_usb_exit();
+
+    /*
+     * Wait for the completion callback, but never for correctness and never for
+     * long: a reply is a single packet, so the controller has already put it on
+     * the wire on its own.  This wait only keeps the next reply from
+     * overwriting gdb_in_xfer while this one is still being read out.
+     */
+    const uint32_t start = board_time_ms();
+    while (gdb_in_busy && ((uint32_t)(board_time_ms() - start) < 5U)) {
+    }
+    gdb_in_busy = false;
 }
 
 static void usbd_cdc_acm_bulk_out_gdb(uint8_t busid, uint8_t ep, uint32_t nbytes)
@@ -423,7 +488,6 @@ static void usbd_cdc_acm_bulk_in_gdb(uint8_t busid, uint8_t ep, uint32_t nbytes)
     (void)nbytes;
 
     gdb_in_busy = false;
-    gdb_in_kick();
 }
 
 int gdb_if_init(void)
@@ -466,26 +530,21 @@ char gdb_if_getchar_to(uint32_t timeout)
 
 void gdb_if_putchar(char c, bool flush)
 {
-    if (((gdb_in_head + 1U) & GDB_BUF_MASK) == gdb_in_tail) {
-        /*
-         * Safety net only: GDB_BUF_SIZE is chosen so a whole maximum size
-         * packet always fits, so this must never be reached.  Dropping here
-         * loses the packet tail and makes GDB report a packet error, so if it
-         * ever triggers, the buffer size needs looking at rather than this.
-         */
-        return;
+    if (gdb_in_len < sizeof(gdb_in_buf)) {
+        gdb_in_buf[gdb_in_len++] = (uint8_t)c;
     }
-    gdb_in_buf[gdb_in_head] = (uint8_t)c;
-    gdb_in_head = (gdb_in_head + 1U) & GDB_BUF_MASK;
+    /* An over-long packet cannot happen: gdb_put_packet() bounds the payload to
+     * GDB_PACKET_BUFFER_SIZE and the buffer above is sized for one of those plus
+     * its framing. */
     if (flush) {
-        gdb_in_kick();
+        gdb_in_send();
     }
 }
 
 void gdb_if_flush(bool force)
 {
     (void)force;
-    gdb_in_kick();
+    gdb_in_send();
 }
 
 /* ------------------------------------------------------------------ *
@@ -534,8 +593,13 @@ void aux_serial_poll(void)
     if (count == 0U) {
         return;
     }
-    aux_in_busy = true;
-    usbd_ep_start_write(0, AUX_IN_EP, aux_in_xfer, count);
+    /* Same check-then-arm serialisation as the GDB endpoint bookkeeping. */
+    gdb_usb_enter();
+    if (!aux_in_busy) {
+        aux_in_busy = true;
+        usbd_ep_start_write(0, AUX_IN_EP, aux_in_xfer, count);
+    }
+    gdb_usb_exit();
 }
 
 /* ------------------------------------------------------------------ *
@@ -652,7 +716,7 @@ static void usbd_event_handler(uint8_t busid, uint8_t event)
             break;
         case USBD_EVENT_RESET:
             gdb_out_pos = gdb_out_len = 0U;
-            gdb_in_head = gdb_in_tail = 0U;
+            gdb_in_len = 0U;
             gdb_out_armed = false;
             gdb_in_busy = false;
             aux_out_armed = false;

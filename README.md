@@ -96,6 +96,70 @@ cmake --build --preset ch32v30x_bmp-release
    ```
 4. 需要重新进入 bootloader 时：`dfu-util -e`（或 GDB 里 `monitor bootloader`）。
 
+## 已知问题：GDB 长回复卡住（已规避，待专门修复）
+
+### 症状
+
+`att 1`（或任何会产生长回复的操作）失败：
+
+```
+$qXfer:features:read:target.xml:0,7fb
+getpkt: Timed out.
+Ignoring packet error, continuing...
+...
+Bad register packet; fetching a new packet
+Truncated register 22 in remote 'g' packet
+```
+
+`mon jt`、`mon swd_scan` 这类短回复正常，所以表现为"目标能识别、但 attach 不上"。
+把 GDB 超时放大（`set remotetimeout 20`）也没用：那份回复要等到**下一条主机命令**
+之后才出现。
+
+### 原因
+
+1. **协议层**：attach 成功后 GDB 立即读 RISC-V 目标描述 XML（本目标约 4.5 KB），按
+   stub 广播的 `PacketSize` 分块。包尺寸为 2048 时，第一块在线上正好 2048 字节。
+2. **控制器层**：CH32V30x USBHS 的 IN 端点一次只装 1 个 max-packet（512 字节）
+   （`usbd_ep_start_write()` 用 `MIN(len, ep_mps)`），其余必须由 USBHS 中断里的
+   "续包"分支补发，完成回调也来自中断。
+3. **端口层**：旧 `gdb_in_send()` 交包后死等，**250 ms 等不到就清状态**
+   （`gdb_in_len = 0`）。于是硬件只发出第一个 512 字节，而驱动仍认为传输未完成；
+   下一条回复再调 `usbd_ep_start_write()` 会重置驱动的 `xfer_buf`/`xfer_len`，两边
+   状态不一致，剩下的包最终在中断被服务时才出去（即"下一条主机命令之后"）。GDB 把
+   这份迟到的 XML 当成下一条 `$g` 的回复（`Bad register packet`），再拿内置寄存器表
+   去量那个 33×4B 的寄存器包（`Truncated register 22`）。
+
+**不是** 位操作（SWD/JTAG）的问题：XML 生成只做字符串格式化、不访问目标，而同一段
+bitbang 路径上的短回复始终正常。
+
+### 当前规避做法
+
+- `bmp_port/CMakeLists.txt`：`GDB_PACKET_BUFFER_SIZE=496`，回复加帧格式 ≤500 字节
+  < 512，**任何回复都不跨 USB 包**，不再需要驱动续包；`bmp_port/cdc_acm_dual.c` 里有
+  编译期 `#error` 守住这个不变量。
+- 发送路径改为"拷贝进专用在飞缓冲、由硬件自行发出"，最长 5 ms 的保护性等待**只**
+  用于避免覆盖仍在被读出的缓冲；正确性不依赖完成回调，也不会中途清掉驱动的传输状态。
+
+代价：`m`/`X` 每次约 230 字节（原来约 1020），`load`/`dump` 往返次数约 4 倍
+（100 KB 量级多花 0.5 s 左右，基本无感）；RAM 反而省了约 8 KB。
+
+### 后续正解（待办）
+
+1. **驱动**（`third_party_components/CherryUSB/port/wch/ch32v30x/usb_dc_ch32v30x.c`）：
+   `USBD_IRQHandler` 每次中断只处理 `INT_ST` 里的一个端点，然后清掉全局
+   `USBHS_TRANSFER_FLAG`；端点一多（本设备 3 个 CDC + DFU，且 OUT 端点常驻 armed），
+   IN 完成事件就可能被丢掉。改成循环处理所有 pending 端点
+   （`while (USBHS_DEVICE->INT_FG & USBHS_TRANSFER_FLAG)`）。
+   参考：同一颗 CH32V305 上的 `ch32v305_bmp` 用另一份端口文件
+   （`port/ch32/ch32hs/usb_dc_usbhs.c`），C 代码与本工程逐字相同、包尺寸也是 2048，
+   但端点更少，且它的发送侧无限等、从不中途清状态，所以没暴露这个问题。
+2. **端口**：超时后不要重置驱动的传输状态（或干脆无限等）。
+3. **定位手段**：在驱动里加计数（续包次数 / 完成回调次数 / 丢事件次数），用 `mon`
+   命令或目标串口打印，先量化"丢的是哪次事件"，再改代码。
+4. 修好后把 `GDB_PACKET_BUFFER_SIZE` 提回 2048（或更大），`load`/`dump` 往返更少。
+5. 独立小改进（与本次无关）：`blackmagic` 的 `riscv_debug.c` 里 DMI `RV_DMI_TOO_SOON`
+   重试是无限循环，链路边缘时表现为"卡死且无提示"，改成有上限并报错更好定位。
+
 ## 说明
 
 - 子仓：`blackmagic`（`https://codeberg.org/mTOTm/blackmagic.git`，
