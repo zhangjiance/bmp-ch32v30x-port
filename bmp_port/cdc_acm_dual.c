@@ -160,11 +160,11 @@ static char serial_string[25];
 static const char *string_descriptors[] = {
     (const char[]){ 0x09, 0x04 },              /* Langid */
     "Blackmagic Debug",                        /* Manufacturer */
-    "Black Magic Probe (CH32V30x)",            /* Product */
+    "Black Magic Probe",                       /* Product */
     serial_string,                             /* Serial Number */
     "Black Magic GDB Server",                  /* iInterface 4 */
     "Black Magic UART",                        /* iInterface 5 */
-    "Black Magic Firmware Upgrade",            /* iInterface 6: DFU runtime */
+    "Black Magic FW Upgrade",                 /* iInterface 6: DFU runtime */
 };
 
 static const uint8_t *device_descriptor_cb(uint8_t speed)
