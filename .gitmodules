@@ -1,5 +1,5 @@
 [submodule "blackmagic"]
-	path = blackmagic
+	path = third_party_components/blackmagic
 	url = https://codeberg.org/mTOTm/blackmagic.git
 	branch = dev/jiance.zhang/main_test
 [submodule "third_party_components/CherryUSB"]

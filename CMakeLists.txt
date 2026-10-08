@@ -19,7 +19,7 @@ cmake_minimum_required(VERSION 3.22)
 #   shared/                boot_protocol.h, the bootloader <-> app contract
 #   linkfile/              application linker script (0x00008000, 96 KB)
 #   SDK/                   WCH ch32v30x peripheral library
-#   blackmagic/            submodule: BMP core + target drivers
+#   third_party_components/blackmagic/  submodule: BMP core + target drivers
 #   third_party_components/CherryUSB/   submodule: USB stack + CH32V30x USBHS
 # ==============================================================================
 
@@ -67,7 +67,7 @@ if(EXISTS "${BOARD_DIR}/board.cmake")
 endif()
 
 foreach(_submodule_file
-        "${CMAKE_CURRENT_SOURCE_DIR}/blackmagic/src/gdb_main.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party_components/blackmagic/src/gdb_main.c"
         "${CHERRYUSB_ROOT}/class/cdc/usbd_cdc_acm.c")
     if(NOT EXISTS "${_submodule_file}")
         message(FATAL_ERROR "Submodule missing (${_submodule_file}); run: git submodule update --init --recursive")

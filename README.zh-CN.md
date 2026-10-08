@@ -13,8 +13,9 @@ CMakePresets.json         release / debug 预设
 bmp_port/                 端口层：USB、GPIO 位操作 SWD/JTAG、目标串口、定时、boot 握手、MCU glue
 bmp_port/CMakeLists.txt   端口源清单 + blackmagic 源清单与 include
 cmake/wch_riscv.cmake     工具链（riscv-wch-elf-）
-blackmagic/               子仓：BMP 核心与 target 驱动
-third_party_components/CherryUSB/  子仓：USB 协议栈 + CH32V30x USBHS 端口
+third_party_components/
+  blackmagic/             子仓：BMP 核心与 target 驱动
+  CherryUSB/              子仓：USB 协议栈 + CH32V30x USBHS 端口
 SDK/                      WCH ch32v30x 外设库
 boards/ch32v30x_bmp/      板级 BSP
 linkfile/flash_dfu.ld     应用链接脚本（0x00008000，96K）
@@ -161,14 +162,14 @@ bitbang 路径上的短回复始终正常。
   - `GDB_PACKET_BUFFER_SIZE` 已改回 **2048**。
 - **对客户端的要求**：单次 `m`（十六进制读内存）长度仍然不能超过
   `GDB_PACKET_BUFFER_SIZE / 2`，现在是 **1024 字节**（判定在
-  `blackmagic/src/gdb_main.c` 的 `len > GDB_PACKET_BUFFER_SIZE / 2U`），超了直接回
-  `E02`。真正的 GDB 会按广播的 `PacketSize` 自动分块，自己实现协议的客户端必须尊重它
+  `third_party_components/blackmagic/src/gdb_main.c` 的
+  `len > GDB_PACKET_BUFFER_SIZE / 2U`），超了直接回 `E02`。真正的 GDB 会按广播的 `PacketSize` 自动分块，自己实现协议的客户端必须尊重它
   或解析 `PacketSize`。另外留意这类工具"读不回就用源数据补齐 CRC"的兜底：那样得到的
   CRC 相等并不代表读回校验通过。
 
 ### 仍未处理
 
-- `blackmagic` 的 `riscv_debug.c` 里 DMI `RV_DMI_TOO_SOON` 重试是无限循环，链路边缘时
+- `blackmagic` 子仓的 `riscv_debug.c` 里 DMI `RV_DMI_TOO_SOON` 重试是无限循环，链路边缘时
   表现为"卡死且无提示"，改成有上限并报错更好定位。
 - 本驱动的 `usbd_get_port_speed()` 硬编码返回 `USB_SPEED_HIGH`，没有读
   `USBHS_DEVICE->SPEED_TYPE`；万一协商回全速，仍会按高速描述符上报非法的 512 字节
@@ -176,8 +177,8 @@ bitbang 路径上的短回复始终正常。
 
 ## 说明
 
-- 子仓：`blackmagic`（`https://codeberg.org/mTOTm/blackmagic.git`，
-  `dev/jiance.zhang/main_test`）与 `third_party_components/CherryUSB`
-  （`ch32v30x-usbhs`，含 CH32V30x USBHS 设备控制器端口）。
+- 子仓（都在 `third_party_components/` 下）：`blackmagic`
+  （`https://codeberg.org/mTOTm/blackmagic.git`，`dev/jiance.zhang/main_test`）与
+  `CherryUSB`（`ch32v30x-usbhs`，含 CH32V30x USBHS 设备控制器端口）。
 - target 驱动清单在 `bmp_port/CMakeLists.txt` 里按需裁剪（应用分区 96 KB），
   需要更多芯片支持时往里加文件即可。

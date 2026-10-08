@@ -14,13 +14,15 @@
 #   bmp_port/       USB (CherryUSB + CH32V30x device controller), GPIO bit
 #                   banged SWD/JTAG, target UART, timing, boot hand-shake,
 #                   MCU glue (system/startup + interrupt vectors)
-#   blackmagic/     submodule: BMP core + target drivers
+#   third_party_components/
+#     blackmagic/     submodule: BMP core + target drivers
+#     CherryUSB/      submodule: USB stack + CH32V30x USBHS device controller
 #   boards/<board>/ board BSP (pins live in bmp_port/jtag_port.h)
 # ==============================================================================
 
 set(PROJECT_ROOT   "${CMAKE_SOURCE_DIR}")
 set(BMP_PORT_DIR   "${CMAKE_CURRENT_SOURCE_DIR}")
-set(BMP_ROOT       "${PROJECT_ROOT}/blackmagic")
+set(BMP_ROOT       "${PROJECT_ROOT}/third_party_components/blackmagic")
 set(BMP_CORE_ROOT  "${BMP_ROOT}/src")
 
 # ------------------------------------------------------------------------------

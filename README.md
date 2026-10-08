@@ -15,8 +15,9 @@ bmp_port/                 port layer: USB, bit-banged SWD/JTAG, target UART,
                           timing, bootloader handshake, MCU glue
 bmp_port/CMakeLists.txt   port sources + blackmagic sources and includes
 cmake/wch_riscv.cmake     toolchain file (riscv-wch-elf-)
-blackmagic/               submodule: BMP core and target drivers
-third_party_components/CherryUSB/   submodule: USB stack + CH32V30x USBHS port
+third_party_components/
+  blackmagic/             submodule: BMP core and target drivers
+  CherryUSB/              submodule: USB stack + CH32V30x USBHS port
 SDK/                      WCH ch32v30x peripheral library
 boards/ch32v30x_bmp/      board BSP
 linkfile/flash_dfu.ld     application linker script (0x00008000, 96K)
@@ -182,7 +183,8 @@ bit-banged path always worked.
   - `GDB_PACKET_BUFFER_SIZE` is back at **2048**.
 - **Client requirement**: a single `m` (hex memory read) must still not exceed
   `GDB_PACKET_BUFFER_SIZE / 2`, now **1024 bytes** (the check is
-  `len > GDB_PACKET_BUFFER_SIZE / 2U` in `blackmagic/src/gdb_main.c`), otherwise
+  `len > GDB_PACKET_BUFFER_SIZE / 2U` in
+  `third_party_components/blackmagic/src/gdb_main.c`), otherwise
   the stub answers `E02`. GDB chunks by the announced `PacketSize` itself, but a
   client that speaks the protocol on its own has to respect it or parse
   `PacketSize`. Also watch out for clients that fill the CRC with source data for
@@ -191,8 +193,8 @@ bit-banged path always worked.
 
 ### Still open
 
-- The DMI `RV_DMI_TOO_SOON` retry loops in `blackmagic`'s `riscv_debug.c` are
-  unbounded, so a marginal link shows up as a hang with no message; a bounded
+- The DMI `RV_DMI_TOO_SOON` retry loops in the blackmagic submodule's
+  `riscv_debug.c` are unbounded, so a marginal link shows up as a hang with no message; a bounded
   retry plus an error message locates it much faster.
 - `usbd_get_port_speed()` in this driver hard-codes `USB_SPEED_HIGH` instead of
   reading `USBHS_DEVICE->SPEED_TYPE`, so a fallback to full speed would still be
@@ -200,8 +202,9 @@ bit-banged path always worked.
 
 ## Notes
 
-- Submodules: `blackmagic` (`https://codeberg.org/mTOTm/blackmagic.git`,
-  `dev/jiance.zhang/main_test`) and `third_party_components/CherryUSB`
-  (`ch32v30x-usbhs`, containing the CH32V30x USBHS device controller port).
+- Submodules, both under `third_party_components/`: `blackmagic`
+  (`https://codeberg.org/mTOTm/blackmagic.git`, `dev/jiance.zhang/main_test`) and
+  `CherryUSB` (`ch32v30x-usbhs`, containing the CH32V30x USBHS device controller
+  port).
 - The target driver list is trimmed in `bmp_port/CMakeLists.txt` to fit the 96 KB
   application partition; add files there to support more chips.
