@@ -95,7 +95,7 @@ cmake --build --preset ch32v30x_bmp-release
    ```
 4. 需要重新进入 bootloader 时：`dfu-util -e`（或 GDB 里 `monitor bootloader`）。
 
-## 已知问题：GDB 长回复卡住（已规避，待专门修复）
+## 已修复：GDB 长回复卡住（根因与修复）
 
 ### 症状
 
@@ -114,56 +114,65 @@ Truncated register 22 in remote 'g' packet
 把 GDB 超时放大（`set remotetimeout 20`）也没用：那份回复要等到**下一条主机命令**
 之后才出现。
 
-### 原因
+### 根因
 
-1. **协议层**：attach 成功后 GDB 立即读 RISC-V 目标描述 XML（本目标约 4.5 KB），按
-   stub 广播的 `PacketSize` 分块。包尺寸为 2048 时，第一块在线上正好 2048 字节。
-2. **控制器层**：CH32V30x USBHS 的 IN 端点一次只装 1 个 max-packet（512 字节）
-   （`usbd_ep_start_write()` 用 `MIN(len, ep_mps)`），其余必须由 USBHS 中断里的
-   "续包"分支补发，完成回调也来自中断。
-3. **端口层**：旧 `gdb_in_send()` 交包后死等，**250 ms 等不到就清状态**
-   （`gdb_in_len = 0`）。于是硬件只发出第一个 512 字节，而驱动仍认为传输未完成；
-   下一条回复再调 `usbd_ep_start_write()` 会重置驱动的 `xfer_buf`/`xfer_len`，两边
-   状态不一致，剩下的包最终在中断被服务时才出去（即"下一条主机命令之后"）。GDB 把
-   这份迟到的 XML 当成下一条 `$g` 的回复（`Bad register packet`），再拿内置寄存器表
-   去量那个 33×4B 的寄存器包（`Truncated register 22`）。
+是 **CherryUSB CH32V30x USBHS 设备控制器端口**的问题
+（`third_party_components/CherryUSB/port/wch/ch32v30x/usb_dc_ch32v30x.c`），而且只
+发生在 IN 方向；端口层的写法则一直在触发它。
+
+1. **控制器**：CH32V30x USBHS 没有多包 burst（新版 IP 的 `port/wch/usbhs` 有
+   `UEP_TX_BURST`）。`usbd_ep_start_write()` 只装 `MIN(len, ep_mps)` = 512 字节，
+   剩下的必须由 `USBD_IRQHandler()` 续发，因此一次传输要跨多个中断。
+2. **驱动：没有"在飞"保护**。上一个传输还没发完时，`usbd_ep_start_write()` 照样接受
+   新的传输：直接覆盖 `xfer_buf`/`xfer_len`/`actual_xfer_len`，重新装
+   `UEPn_TX_LEN`/`TX_DMA`/`TX_CTRL`，等于把主机还在读的那次传输的 data toggle 重来一遍。
+   旧传输的尾巴就被搁死在端点上，只能等下一个 USB 事件才出去——正是观测到的"回复在下
+   一条主机命令之后才出现"。上游 `port/wch/usbhs` 对这种情况返回 `-4` 拒收，CH32V30x
+   端口原来什么都不检查。
+3. **驱动：每次中断只处理一个事件**。`USBD_IRQHandler()` 取一次 `INT_FG` 快照，只服务
+   一个端点，然后清掉全局 `USBHS_TRANSFER_FLAG`；这期间锁存的其它完成事件就被丢了。
+   本设备是复合设备（2 个 CDC + DFU，两个 bulk OUT 端点常驻 armed），丢掉 IN 完成事件
+   就会让一次传输永远结束不了。
+4. **端口：超时后清自己的状态**。旧 `gdb_in_send()` 交包后死等，**250 ms** 等不到就清
+   `gdb_in_len`（中间版本只等 **5 ms**），然后重新装端点——正好喂给第 2 条。
+5. **端口：在中断里装 IN 端点**。旧完成回调在 `USBD_IRQHandler()` 里调 `gdb_in_kick()`，
+   即回复的第 2..n 块是从中断上下文排队的，这条路径在本控制器上不稳定。多包 **OUT 是
+   好的**（DFU bootloader 能收 4 KB 整包传输），只有 IN 方向有问题。
 
 **不是** 位操作（SWD/JTAG）的问题：XML 生成只做字符串格式化、不访问目标，而同一段
 bitbang 路径上的短回复始终正常。
 
-### 当前规避做法
+### 修复
 
-- `bmp_port/CMakeLists.txt`：`GDB_PACKET_BUFFER_SIZE=496`，回复加帧格式 ≤500 字节
-  < 512，**任何回复都不跨 USB 包**，不再需要驱动续包；`bmp_port/cdc_acm_dual.c` 里有
-  编译期 `#error` 守住这个不变量。
-- 发送路径改为"拷贝进专用在飞缓冲、由硬件自行发出"，最长 5 ms 的保护性等待**只**
-  用于避免覆盖仍在被读出的缓冲；正确性不依赖完成回调，也不会中途清掉驱动的传输状态。
-- **对客户端的要求**：单次 `m`（十六进制读内存）长度不能超过
-  `GDB_PACKET_BUFFER_SIZE / 2`（当前 **248 字节**，判定在 `blackmagic/src/gdb_main.c`
-  的 `len > GDB_PACKET_BUFFER_SIZE / 2U`），超了会直接回 `E02`。真正的 GDB 会按广播的
-  `PacketSize` 自动分块，但自己实现协议的客户端必须自己收敛——例如浏览器刷写工具若
-  回读固定 256 字节/块且不解析 `PacketSize`，在 496 的包尺寸下会出现大面积 `E02`。
-  另外留意这类工具"读不回就用源数据补齐 CRC"的兜底：那样得到的 CRC 相等并不代表
-  读回校验通过。
+- **驱动**（`usb_dc_ch32v30x.c`）
+  - `usbd_ep_start_write()` 在端点仍持有传输时返回 `-4`，运行中的传输再也不会被覆盖。
+    该标志在事务完成时释放（在回调之前，因为回调允许排队下一次传输）、stall 时释放、
+    收到新 SETUP 时释放。
+  - `USBD_IRQHandler()` 改成循环排空所有锁存事件（transfer / SETUP / 总线复位），不再
+    一次中断只处理一个；`INT_ST` 只锁存一次——原来 `TOG_OK` 是在清掉 `INT_FG` **之后**
+    才读的。
+  - 新增 `g_ch32_usbhs_stats` 事件计数（装包次数 / 忙拒次数 / IN 事务数 / 续包次数 /
+    完成回调数 / OUT / SETUP 与复位 / 循环溢出）。调试构建里
+    `extern struct ch32_usbhs_stats g_ch32_usbhs_stats;` 就能打印，下次再卡可以先量化
+    "丢的是哪次事件"。
+- **端口**（`bmp_port/cdc_acm_dual.c`）
+  - `gdb_in_send()` 把回复切成 `USB_XFER_SIZE`（512 字节）的块，**只在线程上下文**一次
+    装一块并等它完成。回复不再依赖驱动的中断续包，完成回调只负责清 busy 标志。
+  - `GDB_PACKET_BUFFER_SIZE` 已改回 **2048**。
+- **对客户端的要求**：单次 `m`（十六进制读内存）长度仍然不能超过
+  `GDB_PACKET_BUFFER_SIZE / 2`，现在是 **1024 字节**（判定在
+  `blackmagic/src/gdb_main.c` 的 `len > GDB_PACKET_BUFFER_SIZE / 2U`），超了直接回
+  `E02`。真正的 GDB 会按广播的 `PacketSize` 自动分块，自己实现协议的客户端必须尊重它
+  或解析 `PacketSize`。另外留意这类工具"读不回就用源数据补齐 CRC"的兜底：那样得到的
+  CRC 相等并不代表读回校验通过。
 
-代价：`m`/`X` 每次约 230 字节（原来约 1020），`load`/`dump` 往返次数约 4 倍
-（100 KB 量级多花 0.5 s 左右，基本无感）；RAM 反而省了约 8 KB。
+### 仍未处理
 
-### 后续正解（待办）
-
-1. **驱动**（`third_party_components/CherryUSB/port/wch/ch32v30x/usb_dc_ch32v30x.c`）：
-   `USBD_IRQHandler` 每次中断只处理 `INT_ST` 里的一个端点，然后清掉全局
-   `USBHS_TRANSFER_FLAG`；端点一多（本设备 3 个 CDC + DFU，且 OUT 端点常驻 armed），
-   IN 完成事件就可能被丢掉。改成循环处理所有 pending 端点
-   （`while (USBHS_DEVICE->INT_FG & USBHS_TRANSFER_FLAG)`）。
-   注意同一控制器上**多包 OUT 是好的**（DFU bootloader 能收 4 KB 整包传输），不可靠
-   的只有 IN 方向。
-2. **端口**：超时后不要重置驱动的传输状态（或干脆无限等）。
-3. **定位手段**：在驱动里加计数（续包次数 / 完成回调次数 / 丢事件次数），用 `mon`
-   命令或目标串口打印，先量化"丢的是哪次事件"，再改代码。
-4. 修好后把 `GDB_PACKET_BUFFER_SIZE` 提回 2048（或更大），`load`/`dump` 往返更少。
-5. 独立小改进（与本次无关）：`blackmagic` 的 `riscv_debug.c` 里 DMI `RV_DMI_TOO_SOON`
-   重试是无限循环，链路边缘时表现为"卡死且无提示"，改成有上限并报错更好定位。
+- `blackmagic` 的 `riscv_debug.c` 里 DMI `RV_DMI_TOO_SOON` 重试是无限循环，链路边缘时
+  表现为"卡死且无提示"，改成有上限并报错更好定位。
+- 本驱动的 `usbd_get_port_speed()` 硬编码返回 `USB_SPEED_HIGH`，没有读
+  `USBHS_DEVICE->SPEED_TYPE`；万一协商回全速，仍会按高速描述符上报非法的 512 字节
+  bulk MPS。
 
 ## 说明
 

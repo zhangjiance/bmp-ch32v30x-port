@@ -179,15 +179,9 @@ target_compile_definitions(${PROJECT_TARGET} PRIVATE
     -DADVERTISE_NOACKMODE=1
     -DCONFIG_RISCV=1
     -DCONFIG_RISCV_ACCEL=1
-    # Every GDB reply has to fit in a single USB packet: the CH32V30x USBHS
-    # device driver continues a longer transfer only from its interrupt, and
-    # that path has repeatedly stopped after the first packet (the reply then
-    # arrives late, causing "Ignoring packet error, continuing..." right after
-    # attach, when GDB reads the ~4.5 KB target description XML).  496 + '$'/
-    # '#'/checksum stays inside the 512 byte interrupt/bulk packet.  Raise this
-    # once the controller driver is fixed; see README, "已知问题：GDB 长回复卡住",
-    # for the full analysis and the deferred proper fix.
-    -DGDB_PACKET_BUFFER_SIZE=496
+    # GDB packet size: also the PacketSize announced to GDB, and what bounds a
+    # single 'm' read (GDB_PACKET_BUFFER_SIZE / 2 in gdb_main.c).
+    -DGDB_PACKET_BUFFER_SIZE=2048
     -DDISABLE_IRQ_PREEMPTIVE=1
 )
 

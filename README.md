@@ -104,7 +104,7 @@ Artifacts: `build/ch32v30x_bmp-release/bmp-ch32v30x-port.{elf,hex,bin}`.
    ```
 4. To go back to the bootloader: `dfu-util -e` (or `monitor bootloader` in GDB).
 
-## Known issue: long GDB replies stall (worked around, proper fix pending)
+## Fixed: long GDB replies stalled (root cause)
 
 ### Symptom
 
@@ -123,74 +123,80 @@ Short replies (`mon jt`, `mon swd_scan`) work, so it looks like "the target is
 detected but attach fails". Raising the GDB timeout (`set remotetimeout 20`) does
 not help either: the reply only shows up after the **next host packet**.
 
-### Cause
+### Root cause
 
-1. **Protocol**: after an attach GDB immediately reads the RISC-V target
-   description XML (about 4.5 KB for this target), in chunks sized by the
-   `PacketSize` the stub announces. At a packet size of 2048 the first chunk is
-   exactly 2048 bytes on the wire.
-2. **Controller**: the CH32V30x USBHS IN endpoint only takes one max-packet-size
-   chunk (512 bytes) per `usbd_ep_start_write()` (it uses `MIN(len, ep_mps)`);
-   everything beyond that has to be continued from the USBHS interrupt, and the
-   completion callback comes from that same interrupt.
-3. **Port**: the old `gdb_in_send()` handed the packet over and then waited,
-   giving up and clearing its state after **250 ms**. The controller had therefore
-   sent only the first 512 bytes while the driver still considered the transfer
-   unfinished; the next reply called `usbd_ep_start_write()` again, which resets
-   the driver's `xfer_buf`/`xfer_len`, and the remaining packets only left once the
-   interrupt was serviced (that is, "after the next host packet"). GDB then treated
-   the late XML as the answer to its next `$g` request (`Bad register packet`) and
-   measured the 33 x 4 byte register packet with its built-in register table
-   (`Truncated register 22`).
+Yes - this was a **CherryUSB CH32V30x USBHS device-controller port bug**
+(`third_party_components/CherryUSB/port/wch/ch32v30x/usb_dc_ch32v30x.c`), in the
+IN direction only, plus a port-layer bug that kept triggering it.
+
+1. **Controller**: the CH32V30x USBHS has no multi-packet burst (unlike the
+   newer IP behind `port/wch/usbhs`, which has `UEP_TX_BURST`). `usbd_ep_start_write()`
+   loads only `MIN(len, ep_mps)` = 512 bytes; the rest has to be continued from
+   `USBD_IRQHandler()`, so one transfer lives across several interrupts.
+2. **Driver: no in-flight guard.** `usbd_ep_start_write()` happily accepted a new
+   transfer while the previous one was still on the wire. It overwrote
+   `xfer_buf`/`xfer_len`/`actual_xfer_len` and re-armed `UEPn_TX_LEN`/`TX_DMA`/
+   `TX_CTRL`, i.e. it restarted the data-toggle sequence of a transfer the host was
+   still reading. The tail of the old transfer is then stranded on the endpoint and
+   only leaves at the next USB event - exactly the observed "the reply shows up
+   after the next host packet". Upstream `port/wch/usbhs` rejects this case with
+   `-4`; the CH32V30x port did not check anything.
+3. **Driver: one event per interrupt.** `USBD_IRQHandler()` snapshotted `INT_FG`,
+   serviced exactly one endpoint and cleared the global `USBHS_TRANSFER_FLAG`.
+   Anything latched while that flag was pending was dropped. On this composite
+   device (two CDC functions plus DFU, both bulk OUT endpoints permanently armed)
+   that loses IN completions and leaves a transfer unfinished.
+4. **Port: a timed wait that reset its own state.** The old `gdb_in_send()` handed
+   the packet over, waited, and cleared `gdb_in_len` after **250 ms** - and the
+   intermediate version waited only **5 ms** - then re-armed the endpoint. Both
+   feed straight into 2.
+5. **Port: arming an IN endpoint from the interrupt.** The old completion callback
+   called `gdb_in_kick()` inside `USBD_IRQHandler()`, so chunks 2..n of a reply were
+   queued from interrupt context. That is the path that proved unreliable on this
+   controller. Multi-packet OUT *is* fine (the DFU bootloader receives 4 KB
+   transfers), so only the IN direction is affected.
 
 This is **not** a bit-banging (SWD/JTAG) problem: building that XML is pure string
 formatting and does not touch the target, while short replies over the very same
 bit-banged path always worked.
 
-### Current workaround
+### Fix
 
-- `bmp_port/CMakeLists.txt`: `GDB_PACKET_BUFFER_SIZE=496`, so a reply plus its
-  framing is at most 500 bytes < 512 and **no reply ever crosses a USB packet**,
-  which removes the need for the driver's continuation altogether. A build-time
-  `#error` in `bmp_port/cdc_acm_dual.c` guards that invariant.
-- The send path copies the reply into a dedicated in-flight buffer and lets the
-  controller put it on the wire; the remaining 5 ms wait is only there to avoid
-  overwriting a buffer that is still being read out. Correctness does not depend on
-  the completion callback, and the driver's transfer state is never reset.
-- **Client requirement**: a single `m` (hex memory read) must not exceed
-  `GDB_PACKET_BUFFER_SIZE / 2` (currently **248 bytes**; the check is
+- **Driver** (`usb_dc_ch32v30x.c`)
+  - `usbd_ep_start_write()` returns `-4` when the endpoint still owns a transfer,
+    so a running transfer can no longer be clobbered. The flag is released when
+    the transaction completes (before the completion callback, which is allowed to
+    queue the next one), on stall, and on a new SETUP.
+  - `USBD_IRQHandler()` drains every latched event in a loop (transfer / SETUP /
+    bus reset) instead of one per interrupt, and latches `INT_ST` once - the
+    `TOG_OK` bit used to be re-read *after* `INT_FG` had been cleared.
+  - Event counters in `g_ch32_usbhs_stats` (arming, busy rejects, IN transactions,
+    continuations, completions, OUT, SETUP/reset, loop overflow). Declare
+    `extern struct ch32_usbhs_stats g_ch32_usbhs_stats;` in a debug build to dump
+    them before changing any code next time.
+- **Port** (`bmp_port/cdc_acm_dual.c`)
+  - `gdb_in_send()` cuts a reply into `USB_XFER_SIZE` (512 byte) chunks, arms one
+    chunk at a time **from thread context** and waits for that chunk's completion.
+    No reply depends on the driver's interrupt continuation any more, and the
+    completion callback only clears the busy flag.
+  - `GDB_PACKET_BUFFER_SIZE` is back at **2048**.
+- **Client requirement**: a single `m` (hex memory read) must still not exceed
+  `GDB_PACKET_BUFFER_SIZE / 2`, now **1024 bytes** (the check is
   `len > GDB_PACKET_BUFFER_SIZE / 2U` in `blackmagic/src/gdb_main.c`), otherwise
-  the stub answers `E02`. GDB itself chunks its requests by the announced
-  `PacketSize`, but a client that speaks the protocol on its own has to do the
-  same - a browser flasher that reads back in fixed 256 byte chunks sees a flood
-  of `E02` at 496. Also watch out for clients that fill the CRC with source data
-  for the chunks they could not read back: their checksums then match without
-  anything having been verified.
+  the stub answers `E02`. GDB chunks by the announced `PacketSize` itself, but a
+  client that speaks the protocol on its own has to respect it or parse
+  `PacketSize`. Also watch out for clients that fill the CRC with source data for
+  the chunks they could not read back: their checksums then match without anything
+  having been verified.
 
-Cost: `m`/`X` move about 230 bytes per round trip instead of about 1020, so
-`load`/`dump` need roughly 4x as many round trips (about 0.5 s more for 100 KB,
-which is negligible); RAM usage drops by about 8 KB.
+### Still open
 
-### Proper fix (TODO)
-
-1. **Driver** (`third_party_components/CherryUSB/port/wch/ch32v30x/usb_dc_ch32v30x.c`):
-   `USBD_IRQHandler` handles only one endpoint per interrupt (the one in `INT_ST`)
-   and then clears the global `USBHS_TRANSFER_FLAG`. With enough endpoints (this
-   device has three CDC functions plus DFU, and its OUT endpoint is always armed)
-   an IN completion can get lost. Handle all pending endpoints in a loop
-   (`while (USBHS_DEVICE->INT_FG & USBHS_TRANSFER_FLAG)`).
-   Note that multi-packet OUT transfers do work on this controller (the DFU
-   bootloader receives 4 KB transfers), so only the IN direction is unreliable.
-2. **Port**: do not reset the driver's transfer state on timeout (or wait forever).
-3. **Instrumentation**: add counters in the driver (continuations, completion
-   callbacks, dropped events) and print them from a `mon` command or the target
-   UART, so the event that gets lost can be identified before changing any code.
-4. Once fixed, raise `GDB_PACKET_BUFFER_SIZE` back to 2048 (or more) to cut down
-   the number of round trips for `load`/`dump`.
-5. Unrelated small improvement: the DMI `RV_DMI_TOO_SOON` retry loops in
-   `blackmagic`'s `riscv_debug.c` are unbounded, so a marginal link shows up as a
-   hang with no message; a bounded retry plus an error message locates it much
-   faster.
+- The DMI `RV_DMI_TOO_SOON` retry loops in `blackmagic`'s `riscv_debug.c` are
+  unbounded, so a marginal link shows up as a hang with no message; a bounded
+  retry plus an error message locates it much faster.
+- `usbd_get_port_speed()` in this driver hard-codes `USB_SPEED_HIGH` instead of
+  reading `USBHS_DEVICE->SPEED_TYPE`, so a fallback to full speed would still be
+  served the high-speed descriptors (with their illegal 512 byte bulk MPS).
 
 ## Notes
 
