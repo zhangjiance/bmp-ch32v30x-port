@@ -17,15 +17,20 @@
  * (like bmp-hpm-port minus its RTT multiplexing, and unlike ch32v305_bmp which
  * adds a third CDC port for RTT).
  *
- * MS OS 1.0 compatible IDs (WCID) are attached to interfaces 0, 2 and 4 so
- * Windows binds WinUSB to all three automatically - no Zadig step.
+ * WinUSB for the DFU runtime interface is announced through Microsoft OS 1.0
+ * (WCID) descriptors, the same way ch32_hello_world, bmp-hpm-port and
+ * ch32_dfu_boot do it, so Windows installs the driver automatically (no Zadig
+ * step, so "dfu-util -e" works out of the box) while the two CDC functions keep
+ * their COM ports.
  */
 #include "usbd_core.h"
 #include "usbd_cdc_acm.h"
 #include "usb_config.h"
 
 #include "board.h"
+#include "general.h" /* platform_support.h requires this to be included first */
 #include "platform.h"
+#include "platform_support.h" /* platform_request_boot() for DFU_DETACH */
 #include "gdb_if.h"
 #include "aux_serial.h"
 
@@ -51,13 +56,37 @@
 #define DFU_IF_DESC_LEN  (9 + 9) /* interface + DFU functional */
 #define USB_CONFIG_SIZE  (9 + GDB_CDC_DESC_LEN + AUX_CDC_DESC_LEN + DFU_IF_DESC_LEN)
 
-/* One maximum size GDB packet must fit without dropping bytes
- * (GDB_PACKET_BUFFER_SIZE is set from the build system). */
+/*
+ * The host-facing ring buffer must hold one worst case GDB packet in full,
+ * otherwise gdb_if_putchar() drops bytes and GDB never sees the end of the
+ * packet ("Ignoring packet error, continuing...").
+ *
+ * gdb_packet_send() writes, for one packet:
+ *     '$' + payload + '#' + 2 checksum digits = packet->size + 4 bytes
+ * and gdb_put_packet() allows packet->size up to GDB_PACKET_BUFFER_SIZE, with
+ * gdb_if_putchar_escaped() able to double the payload.  Sizing the ring to
+ * exactly GDB_PACKET_BUFFER_SIZE (the previous value) left only
+ * GDB_PACKET_BUFFER_SIZE - 1 usable slots, so every maximum size reply lost
+ * its trailing checksum - which is exactly what the RISC-V target description
+ * XML (~4.5 KB, sent in maximum size chunks), the memory map and large 'm'
+ * reads are.  The documented size below therefore covers the escaped worst
+ * case; a smaller one is a build error.
+ */
 #ifndef GDB_PACKET_BUFFER_SIZE
 #define GDB_PACKET_BUFFER_SIZE 2048U
 #endif
-#define GDB_BUF_SIZE   GDB_PACKET_BUFFER_SIZE
-#define GDB_BUF_MASK   (GDB_BUF_SIZE - 1U)
+/* 8192 = the smallest power of two that covers 2 * (2048 + 8), see above. */
+#define GDB_BUF_SIZE  8192U
+#define GDB_BUF_MASK  (GDB_BUF_SIZE - 1U)
+
+/* GDB_BUF_MASK relies on the size being a power of two, and the size has to
+ * cover one escaped maximum size packet plus its framing. */
+#if (GDB_BUF_SIZE & GDB_BUF_MASK) != 0U
+#error "GDB_BUF_SIZE must be a power of two"
+#endif
+#if GDB_BUF_SIZE < (2U * (GDB_PACKET_BUFFER_SIZE + 8U))
+#error "GDB_BUF_SIZE too small for one escaped maximum size GDB packet"
+#endif
 
 /* GDB, host -> probe */
 static USB_MEM_ALIGNX uint8_t gdb_out_xfer[USB_XFER_SIZE];
@@ -81,13 +110,22 @@ static USB_MEM_ALIGNX uint8_t aux_in_xfer[64];
 static volatile bool aux_in_busy;
 static volatile bool aux_dtr;
 
+/* MS OS 1.0 (WCID) vendor code, used by the 0xEE string descriptor and the
+ * vendor requests; the descriptors are further down. */
+#define WINUSB_VENDOR_CODE 0x20U
+
 /* ------------------------------------------------------------------ *
  * Descriptors
  * ------------------------------------------------------------------ */
 static const uint8_t device_descriptor[] = {
-    /* bcdDevice is part of the Windows hardware ID: bump it whenever the
-     * interface layout or the WCID data changes, to force a fresh install. */
-    USB_DEVICE_DESCRIPTOR_INIT(USB_2_0, 0xEF, 0x02, 0x01, USBD_VID, USBD_PID, 0x0100, 0x01)
+    /* bcdDevice is part of the Windows hardware ID and of the usbflags WCID
+     * cache key (VID/PID/bcdDevice), so bump it whenever the interface layout
+     * or the WCID data changes: that is what makes Windows redo the MS OS 1.0
+     * inquiry instead of reusing a cached, possibly failed, result.
+     * Revision history of this port: 0x0100 WCID 1.0 with a NULL
+     * comp_id_property, 0x0101 MS OS 2.0 experiment, 0x0102 first 1.0 rework,
+     * 0x0103 this one. */
+    USB_DEVICE_DESCRIPTOR_INIT(USB_2_0, 0xEF, 0x02, 0x01, USBD_VID, USBD_PID, 0x0103, 0x01)
 };
 
 static const uint8_t config_descriptor_hs[] = {
@@ -97,7 +135,7 @@ static const uint8_t config_descriptor_hs[] = {
     /* target UART: interfaces 2 (control) and 3 (data) */
     CDC_ACM_DESCRIPTOR_INIT(AUX_CTRL_INTF, AUX_INT_EP, AUX_OUT_EP, AUX_IN_EP, USB_BULK_EP_MPS_HS, 0x05),
     /* DFU runtime: interface 4 */
-    0x09, 0x04, DFU_INTF, 0x00, 0x00, 0xFE, 0x01, 0x01, 0x00,
+    0x09, 0x04, DFU_INTF, 0x00, 0x00, 0xFE, 0x01, 0x01, 0x06,
     0x09, 0x21, 0x0B, 0xFF, 0x00, 0x00, 0x10, 0x1A, 0x01,
 };
 
@@ -105,20 +143,21 @@ static const uint8_t config_descriptor_fs[] = {
     USB_CONFIG_DESCRIPTOR_INIT(USB_CONFIG_SIZE, 0x05, 0x01, USB_CONFIG_BUS_POWERED, USBD_MAX_POWER),
     CDC_ACM_DESCRIPTOR_INIT(GDB_CTRL_INTF, GDB_INT_EP, GDB_OUT_EP, GDB_IN_EP, USB_BULK_EP_MPS_FS, 0x04),
     CDC_ACM_DESCRIPTOR_INIT(AUX_CTRL_INTF, AUX_INT_EP, AUX_OUT_EP, AUX_IN_EP, USB_BULK_EP_MPS_FS, 0x05),
-    0x09, 0x04, DFU_INTF, 0x00, 0x00, 0xFE, 0x01, 0x01, 0x00,
+    0x09, 0x04, DFU_INTF, 0x00, 0x00, 0xFE, 0x01, 0x01, 0x06,
     0x09, 0x21, 0x0B, 0xFF, 0x00, 0x00, 0x10, 0x1A, 0x01,
 };
 
 static const uint8_t device_quality_descriptor[] = {
     0x0a, USB_DESCRIPTOR_TYPE_DEVICE_QUALIFIER,
-    0x00, 0x02, 0x00, 0x00, 0x00, 0x40, 0x01, 0x00,
+    0x00, 0x02,             /* bcdUSB 2.0, matching the device descriptor */
+    0x00, 0x00, 0x00, 0x40, 0x01, 0x00,
 };
 
 static const uint8_t other_speed_config_descriptor_hs[] = {
     USB_OTHER_SPEED_CONFIG_DESCRIPTOR_INIT(USB_CONFIG_SIZE, 0x05, 0x01, USB_CONFIG_BUS_POWERED, USBD_MAX_POWER),
     CDC_ACM_DESCRIPTOR_INIT(GDB_CTRL_INTF, GDB_INT_EP, GDB_OUT_EP, GDB_IN_EP, USB_BULK_EP_MPS_FS, 0x04),
     CDC_ACM_DESCRIPTOR_INIT(AUX_CTRL_INTF, AUX_INT_EP, AUX_OUT_EP, AUX_IN_EP, USB_BULK_EP_MPS_FS, 0x05),
-    0x09, 0x04, DFU_INTF, 0x00, 0x00, 0xFE, 0x01, 0x01, 0x00,
+    0x09, 0x04, DFU_INTF, 0x00, 0x00, 0xFE, 0x01, 0x01, 0x06,
     0x09, 0x21, 0x0B, 0xFF, 0x00, 0x00, 0x10, 0x1A, 0x01,
 };
 
@@ -126,7 +165,7 @@ static const uint8_t other_speed_config_descriptor_fs[] = {
     USB_OTHER_SPEED_CONFIG_DESCRIPTOR_INIT(USB_CONFIG_SIZE, 0x05, 0x01, USB_CONFIG_BUS_POWERED, USBD_MAX_POWER),
     CDC_ACM_DESCRIPTOR_INIT(GDB_CTRL_INTF, GDB_INT_EP, GDB_OUT_EP, GDB_IN_EP, USB_BULK_EP_MPS_HS, 0x04),
     CDC_ACM_DESCRIPTOR_INIT(AUX_CTRL_INTF, AUX_INT_EP, AUX_OUT_EP, AUX_IN_EP, USB_BULK_EP_MPS_HS, 0x05),
-    0x09, 0x04, DFU_INTF, 0x00, 0x00, 0xFE, 0x01, 0x01, 0x00,
+    0x09, 0x04, DFU_INTF, 0x00, 0x00, 0xFE, 0x01, 0x01, 0x06,
     0x09, 0x21, 0x0B, 0xFF, 0x00, 0x00, 0x10, 0x1A, 0x01,
 };
 
@@ -140,6 +179,7 @@ static const char *string_descriptors[] = {
     serial_string,                             /* Serial Number */
     "Black Magic GDB Server",                  /* iInterface 4 */
     "Black Magic UART",                        /* iInterface 5 */
+    "Black Magic Firmware Upgrade",            /* iInterface 6: DFU runtime */
 };
 
 static const uint8_t *device_descriptor_cb(uint8_t speed)
@@ -175,14 +215,31 @@ static const char *string_descriptor_cb(uint8_t speed, uint8_t index)
 }
 
 /* ------------------------------------------------------------------ *
- * MS OS 1.0 (WCID): bind WinUSB to the GDB, UART and DFU interfaces
+ * Microsoft OS 1.0 (WCID): WinUSB for the DFU runtime interface
  *
- * Windows asks for GET_DESCRIPTOR(String, 0xEE) to learn the vendor code and
- * then fetches the compatible ID feature descriptor, which carries one 24 byte
- * entry per interface.  No extended properties are advertised: the compatible
- * ID alone is what makes Windows install WinUSB.
+ * Same approach and the same device layout as ch32_hello_world, bmp-hpm-port and
+ * ch32_dfu_boot (two CDC functions plus a DFU runtime interface in a
+ * 0xEF/0x02/0x01 composite with no interface association descriptors): the DFU
+ * runtime is the only interface advertised here, with the "WINUSB" compatible
+ * ID, so Windows installs WinUSB for it automatically and "dfu-util -e" works
+ * without a manual Zadig step.  The two CDC functions are deliberately NOT
+ * listed, so Windows keeps its inbox usbser.sys for them and the GDB server and
+ * the target UART stay COM ports.
+ *
+ * Windows queries:
+ *   GET_DESCRIPTOR(String, index 0xEE)      -> msos_string
+ *   vendor request bRequest=0x20 wIndex=4   -> msos_compat_id
+ *   vendor request bRequest=0x20 wIndex=5   -> msos_ext_prop
+ *
+ * Windows caches the outcome per VID/PID/bcdDevice in
+ * HKLM\SYSTEM\CurrentControlSet\Control\usbflags, so a failed inquiry sticks
+ * until one of those changes - which is why bcdDevice is bumped whenever this
+ * data changes.
+ *
+ * The DeviceInterfaceGUIDs extended property below is mandatory: CherryUSB
+ * dereferences comp_id_property[] for the wIndex = 5 request
+ * (core/usbd_core.c) and a NULL there faults in the middle of enumeration.
  * ------------------------------------------------------------------ */
-#define WINUSB_VENDOR_CODE 0x20U
 
 static const uint8_t msos_string[] = {
     0x12, 0x03,
@@ -199,21 +256,109 @@ static const uint8_t msos_string[] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 
 static const uint8_t msos_compat_id[] = {
-    0x58, 0x00, 0x00, 0x00, /* dwLength = 16 + 24 * 3 */
+    0x28, 0x00, 0x00, 0x00, /* dwLength = 16 + 24 * 1 */
     0x00, 0x01,             /* bcdVersion 1.0 */
     0x04, 0x00,             /* wIndex 0x0004 */
-    0x03,                   /* bCount */
+    0x01,                   /* bCount */
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* reserved[7] */
-    WCID_ENTRY(GDB_CTRL_INTF),
-    WCID_ENTRY(AUX_CTRL_INTF),
     WCID_ENTRY(DFU_INTF),
 };
+
+/*
+ * Extended Properties Feature Descriptor (DeviceInterfaceGUIDs), assembled at
+ * init time from the plain ASCII GUID below so the UTF-16LE conversion cannot
+ * be mistyped.
+ *
+ * Windows takes the response length from the first four bytes of this buffer,
+ * so the declared length must cover exactly the bytes that are written:
+ *   10 header + (4 dwSize + 4 dwPropertyDataType + 2 wPropertyNameLength
+ *   + 42 L"DeviceInterfaceGUIDs" + 4 dwPropertyDataLength
+ *   + 80 REG_MULTI_SZ payload) = 146
+ */
+#define DFU_INTERFACE_GUID    "{6d2f9a83-4c17-4e05-9b62-7a81c4f30d18}"
+#define MSOS_PROP_NAME        "DeviceInterfaceGUIDs"
+#define MSOS_PROP_NAME_BYTES  ((uint32_t)sizeof(MSOS_PROP_NAME) * 2U)
+/* REG_MULTI_SZ payload: the GUID string, its own NUL, and the list's NUL. */
+#define MSOS_PROP_DATA_BYTES  (((uint32_t)sizeof(DFU_INTERFACE_GUID) - 1U + 2U) * 2U)
+#define MSOS_PROP_SECTION_LEN (4U + 4U + 2U + MSOS_PROP_NAME_BYTES + 4U + MSOS_PROP_DATA_BYTES)
+#define MSOS_EXT_PROP_LEN     (10U + MSOS_PROP_SECTION_LEN)
+
+static uint8_t msos_ext_prop[MSOS_EXT_PROP_LEN];
+
+/* Returned for wValue != 0: a valid but empty property set. */
+static const uint8_t msos_ext_prop_empty[] = {
+    0x0a, 0x00, 0x00, 0x00, /* dwLength = 10 */
+    0x00, 0x01,             /* bcdVersion 1.0 */
+    0x05, 0x00,             /* wIndex 0x0005 */
+    0x00, 0x00,             /* bCount = 0 */
+};
+
+/* CherryUSB indexes this array with setup->wValue, so keep two entries. */
+static const uint8_t *msos_ext_prop_list[2];
+
+static void msos_ext_prop_build(void)
+{
+    static const char prop_name[] = MSOS_PROP_NAME;
+    static const char guid[] = DFU_INTERFACE_GUID;
+    uint32_t p = 0U;
+    uint32_t i;
+
+    /* dwLength / wVersion(0x0100) / wIndex(0x0005) / wCount(1) */
+    msos_ext_prop[p++] = (uint8_t)(MSOS_EXT_PROP_LEN);
+    msos_ext_prop[p++] = (uint8_t)(MSOS_EXT_PROP_LEN >> 8);
+    msos_ext_prop[p++] = 0x00U;
+    msos_ext_prop[p++] = 0x00U;
+    msos_ext_prop[p++] = 0x00U;
+    msos_ext_prop[p++] = 0x01U;
+    msos_ext_prop[p++] = 0x05U;
+    msos_ext_prop[p++] = 0x00U;
+    msos_ext_prop[p++] = 0x01U;
+    msos_ext_prop[p++] = 0x00U;
+
+    /* dwSize / dwPropertyDataType(REG_MULTI_SZ) / wPropertyNameLength */
+    msos_ext_prop[p++] = (uint8_t)(MSOS_PROP_SECTION_LEN);
+    msos_ext_prop[p++] = (uint8_t)(MSOS_PROP_SECTION_LEN >> 8);
+    msos_ext_prop[p++] = 0x00U;
+    msos_ext_prop[p++] = 0x00U;
+    msos_ext_prop[p++] = 0x07U; /* REG_MULTI_SZ */
+    msos_ext_prop[p++] = 0x00U;
+    msos_ext_prop[p++] = 0x00U;
+    msos_ext_prop[p++] = 0x00U;
+    msos_ext_prop[p++] = (uint8_t)(MSOS_PROP_NAME_BYTES);
+    msos_ext_prop[p++] = (uint8_t)(MSOS_PROP_NAME_BYTES >> 8);
+
+    /* bPropertyName, UTF-16LE (NUL included by sizeof) */
+    for (i = 0U; i < (uint32_t)sizeof(prop_name); i++) {
+        msos_ext_prop[p++] = (uint8_t)prop_name[i];
+        msos_ext_prop[p++] = 0x00U;
+    }
+
+    /* dwPropertyDataLength */
+    msos_ext_prop[p++] = (uint8_t)(MSOS_PROP_DATA_BYTES);
+    msos_ext_prop[p++] = (uint8_t)(MSOS_PROP_DATA_BYTES >> 8);
+    msos_ext_prop[p++] = 0x00U;
+    msos_ext_prop[p++] = 0x00U;
+
+    /* bPropertyData, UTF-16LE GUID */
+    for (i = 0U; i < (uint32_t)(sizeof(guid) - 1U); i++) {
+        msos_ext_prop[p++] = (uint8_t)guid[i];
+        msos_ext_prop[p++] = 0x00U;
+    }
+    /* REG_MULTI_SZ terminator: end of the string, then end of the list. */
+    msos_ext_prop[p++] = 0x00U;
+    msos_ext_prop[p++] = 0x00U;
+    msos_ext_prop[p++] = 0x00U;
+    msos_ext_prop[p++] = 0x00U;
+
+    msos_ext_prop_list[0] = msos_ext_prop;
+    msos_ext_prop_list[1] = msos_ext_prop_empty;
+}
 
 static const struct usb_msosv1_descriptor msosv1 = {
     .string = msos_string,
     .vendor_code = WINUSB_VENDOR_CODE,
     .compat_id = msos_compat_id,
-    .comp_id_property = NULL,
+    .comp_id_property = msos_ext_prop_list,
 };
 
 /* ------------------------------------------------------------------ *
@@ -322,7 +467,13 @@ char gdb_if_getchar_to(uint32_t timeout)
 void gdb_if_putchar(char c, bool flush)
 {
     if (((gdb_in_head + 1U) & GDB_BUF_MASK) == gdb_in_tail) {
-        return; /* full: drop instead of corrupting the packet stream */
+        /*
+         * Safety net only: GDB_BUF_SIZE is chosen so a whole maximum size
+         * packet always fits, so this must never be reached.  Dropping here
+         * loses the packet tail and makes GDB report a packet error, so if it
+         * ever triggers, the buffer size needs looking at rather than this.
+         */
+        return;
     }
     gdb_in_buf[gdb_in_head] = (uint8_t)c;
     gdb_in_head = (gdb_in_head + 1U) & GDB_BUF_MASK;
@@ -520,6 +671,9 @@ void cdc_acm_init(uint8_t busid, uint32_t reg_base)
         .device_quality_descriptor_callback = device_quality_descriptor_cb,
         .other_speed_descriptor_callback    = other_speed_descriptor_cb,
         .string_descriptor_callback         = string_descriptor_cb,
+        /* MS OS 1.0 (WCID) so Windows installs WinUSB for the DFU runtime
+         * interface without a manual Zadig step (see the comment above those
+         * descriptors). */
         .msosv1_descriptor                  = &msosv1,
         .msosv2_descriptor                  = NULL,
         .bos_descriptor                     = NULL,
@@ -527,6 +681,10 @@ void cdc_acm_init(uint8_t busid, uint32_t reg_base)
 
     build_serial_string();
     aux_serial_init();
+
+    /* Assemble the MS OS 1.0 extended properties (DeviceInterfaceGUIDs) for the
+     * DFU runtime interface before the descriptors are registered. */
+    msos_ext_prop_build();
 
     usbd_desc_register(busid, &cdc_descriptor);
 

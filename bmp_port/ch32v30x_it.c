@@ -5,7 +5,7 @@
 * The USBHS vector only forwards into the CherryUSB device controller
 * (USBD_IRQHandler); everything else keeps the WCH defaults.  The USART3
 * handler for the target UART lives next to its driver in
-* port/ch32v30x/aux_serial.c.
+* bmp_port/aux_serial.c.
 *******************************************************************************/
 #include "ch32v30x_it.h"
 

@@ -30,9 +30,14 @@
 #define CONFIG_USBDEV_REQUEST_BUFFER_LEN  512
 #define CONFIG_USBDEV_EP_NUM              8
 
-/* The upstream Black Magic Probe USB id, so the host tooling (and the
- * udev/WinUSB rules that ship with it) recognise the device. */
-#define USBD_VID        0x1D50
+/* WCH's vendor id, same as ch32_dfu_boot (1a86:df11) and ch32_hello_world
+ * (1a86:df12), with the Black Magic Probe's product id kept so host tooling
+ * that keys off the PID still recognises the probe.
+ *
+ * Note this is part of the Windows hardware id (USB\VID_1A86&PID_6018&REV_xxxx):
+ * changing it makes Windows treat the probe as a brand new device and redo the
+ * WCID/WinUSB installation instead of reusing a cached result. */
+#define USBD_VID        0x1A86
 #define USBD_PID        0x6018
 #define USBD_MAX_POWER  200
 

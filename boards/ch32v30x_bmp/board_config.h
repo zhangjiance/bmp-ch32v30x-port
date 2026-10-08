@@ -3,7 +3,7 @@
  *
  * Board identity for the CH32V30x Black Magic Probe port.
  *
- * The pins live in port/ch32v30x/jtag_port.h (they are part of the probe's
+ * The pins live in bmp_port/jtag_port.h (they are part of the probe's
  * SWD/JTAG bit-banging layer, exactly like ch32v305_bmp), this header only
  * carries what the build and the USB descriptors need to know.
  *
