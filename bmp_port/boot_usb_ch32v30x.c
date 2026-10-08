@@ -5,7 +5,8 @@
  *   - the CherryUSB low-level hooks (usb_dc_low_level_init / _deinit)
  *   - the teardown used before jumping to the application
  *
- * Same PHY/PLL recipe as ch32v305_uf2 / ch32v305_bmp (USBHS, high speed).
+ * The controller runs USBHS in high speed; the PHY/PLL setup is in
+ * usb_dc_low_level_init() below.
  */
 #include "boot_usb_port.h"
 

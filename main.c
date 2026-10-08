@@ -1,8 +1,7 @@
 /*
- * Black Magic Probe on CH32V305.
- *
- * Ported from bmp-hpm-port (main.c + bmp_port/*), USB stack is CherryUSB
- * v1.6.0 with the WCH USBHS device controller.
+ * Black Magic Probe on CH32V305.  Application entry point; the port layer lives
+ * in bmp_port/ and the USB stack is CherryUSB v1.6.0 with the WCH USBHS device
+ * controller.
  */
 
 #include "stdio.h"

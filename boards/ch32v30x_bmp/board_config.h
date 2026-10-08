@@ -4,10 +4,10 @@
  * Board identity for the CH32V30x Black Magic Probe port.
  *
  * The pins live in bmp_port/jtag_port.h (they are part of the probe's
- * SWD/JTAG bit-banging layer, exactly like ch32v305_bmp), this header only
- * carries what the build and the USB descriptors need to know.
+ * SWD/JTAG bit-banging layer), this header only carries what the build and the
+ * USB descriptors need to know.
  *
- * Wiring (identical to ch32v305_bmp, so the same adapter cable works):
+ * Wiring:
  *   PB14 -> SWCLK / TCK
  *   PB15 -> SWDIO / TMS   (push-pull output, switched to input for SWD reads)
  *   PB13 -> TDI

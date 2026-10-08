@@ -1,8 +1,8 @@
 # ==============================================================================
 # bmp_port/CMakeLists.txt
 #
-# The whole CH32V30x port, organised like bmp-hpm-port/bmp_port/CMakeLists.txt:
-# this file lists the port sources *and* the blackmagic core/target sources, and
+# The whole CH32V30x port: this file lists the port sources *and* the blackmagic
+# core/target sources, and
 # sets the application's include paths and compile definitions.  The top level
 # CMakeLists.txt creates the executable (from main.c), calls
 # add_subdirectory(bmp_port) and does the final link and objcopy, so this file
@@ -51,12 +51,10 @@ target_sources(ch32v30x_lib PRIVATE
 #
 # The CH32V30x USBHS device controller comes from our CherryUSB fork (branch
 # ch32v30x-usbhs): CherryUSB master has no usable CH32V30x USBHS port, as
-# port/wch/usbhs targets a different USBHS IP.  Same driver as ch32_dfu_boot and
-# ch32_hello_world use.
+# port/wch/usbhs targets a different USBHS IP.
 #
 # SWD/JTAG are pure GPIO bit banging - no peripheral acceleration - so the
-# timing is fully deterministic and swdptap.c/jtagtap.c stay identical to
-# bmp-hpm-port, with only jtag_port.h being CH32V30x specific.
+# timing is fully deterministic; only jtag_port.h is CH32V30x specific.
 # ------------------------------------------------------------------------------
 set(bmp_port_srcs
     # platform: LED, boot hand-shake, target clock output control
@@ -69,7 +67,7 @@ set(bmp_port_srcs
     ${BMP_PORT_DIR}/cdc_acm_dual.c
     ${BMP_PORT_DIR}/aux_serial.c
     ${CHERRYUSB_ROOT}/port/wch/ch32v30x/usb_dc_ch32v30x.c
-    # ch32_dfu_boot integration: BKP hand-shake and reset into the bootloader
+    # bootloader integration: BKP hand-shake and reset into the bootloader
     ${BMP_PORT_DIR}/boot_trigger_ch32v30x.c
     ${BMP_PORT_DIR}/boot_usb_ch32v30x.c
     # MCU glue: WCH system (clocks) and the interrupt vector implementations
@@ -80,8 +78,8 @@ set(bmp_port_srcs
 # ------------------------------------------------------------------------------
 # blackmagic (Black Magic Debug) core and target drivers
 #
-# Structure follows bmp-hpm-port: the core and the target drivers come from the
-# blackmagic submodule, everything the probe itself needs comes from bmp_port/.
+# The core and the target drivers come from the blackmagic submodule;
+# everything the probe itself needs comes from bmp_port/.
 #
 # Deliberately NOT built:
 #   src/rtt.c                     this port has no RTT support

@@ -6,8 +6,6 @@
  *   PB10 = USART3 TX (alternate function push-pull)
  *   PB11 = USART3 RX (input with pull-up)
  *
- * Exactly the pins ch32v305_bmp uses, so the same adapter cable works.
- *
  * Both directions go through small ring buffers driven by the USART
  * interrupt: the USB callbacks must never block, and the target UART is far
  * slower than USB bulk transfers.

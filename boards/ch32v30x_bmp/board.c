@@ -124,6 +124,5 @@ void board_init(void)
 
 /*
  * The CherryUSB low-level hook (usb_dc_low_level_init(uint8_t busid)) lives in
- * bmp_port/boot_usb_ch32v30x.c, next to the PHY/PLL recipe it shares with
- * ch32_dfu_boot and ch32_hello_world.
+ * bmp_port/boot_usb_ch32v30x.c, next to the PHY/PLL recipe it needs.
  */

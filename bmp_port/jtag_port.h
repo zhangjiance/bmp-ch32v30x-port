@@ -1,12 +1,10 @@
 /*
- * CH32V305 port of the bmp-hpm-port `jtag_port.h`.
+ * SWD/JTAG pin layer for the CH32V305/CH32V30x port.
  *
  * Only these PIN_* / LED_* / TIMESTAMP_GET macros are platform specific:
- * swdptap.c and jtagtap.c are shared verbatim with bmp-hpm-port and only
- * call into this header.
+ * swdptap.c and jtagtap.c contain the protocol and only call into this header.
  *
- * Pin mapping is kept identical to the ch32v305_dap board so the same
- * hardware can run either firmware.
+ * Pin mapping:
  *   PB14 -> SWCLK/TCK
  *   PB15 -> SWDIO/TMS   (driven open-drain, see board.c)
  *   PB13 -> TDI

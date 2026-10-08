@@ -3,14 +3,13 @@ cmake_minimum_required(VERSION 3.22)
 # ==============================================================================
 # bmp-ch32v30x-port - Black Magic Probe port for CH32V30x
 #
-# Standalone application for the ch32_dfu_boot DFU bootloader:
+# Application image for the DFU bootloader:
 #   * links at 0x00008000, the application partition (32 KB bootloader)
 #   * DFU runtime interface: "dfu-util -e" (and "monitor bootloader") resets
 #     into the bootloader through the BKP hand-shake
 #
-# Layout follows bmp-hpm-port: one bmp_port/ directory holds the whole port
-# including its source list, main.c sits at the top level and the board BSP
-# lives in boards/<board>/.
+# Layout: one bmp_port/ directory holds the whole port including its source list,
+# main.c sits at the top level and the board BSP lives in boards/<board>/.
 #
 #   CMakeLists.txt         this file: toolchain, board selection, link, objcopy
 #   main.c                 application entry point
@@ -28,7 +27,7 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS ON)
 
-# The CH32V305/307 USBHS block runs in high speed (same as ch32v305_bmp).
+# The CH32V305/307 USBHS block runs in high speed.
 add_compile_definitions(-DCONFIG_USB_HS)
 
 if(NOT CMAKE_BUILD_TYPE)
@@ -82,8 +81,7 @@ include("${CHERRYUSB_ROOT}/cherryusb.cmake")
 
 # CherryUSB master has no usable CH32V30x USBHS port (port/wch/usbhs targets a
 # different USBHS IP), so the CH32V30x controller comes from our CherryUSB fork
-# (branch ch32v30x-usbhs), the same driver ch32_dfu_boot and ch32_hello_world
-# use.
+# (branch ch32v30x-usbhs).
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS TRUE)
 enable_language(C ASM)
@@ -102,7 +100,7 @@ add_executable(${PROJECT_TARGET} main.c)
 
 # Everything else - port sources, blackmagic core and target drivers, the WCH
 # peripheral library, the board BSP, include paths and compile definitions -
-# is contributed by bmp_port/CMakeLists.txt, mirroring bmp-hpm-port.
+# is contributed by bmp_port/CMakeLists.txt.
 add_subdirectory(bmp_port)
 
 add_custom_command(TARGET ${PROJECT_TARGET} POST_BUILD

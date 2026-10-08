@@ -8,8 +8,8 @@
 
 /*
  * True while bmp_poll_loop() is blocked in gdb_packet_receive() waiting for the
- * next GDB request.  Kept for the same purpose as in bmp-hpm-port (a slow host
- * side task may only touch the target while no GDB command is in flight).
+ * next GDB request: a slow host side task may only touch the target while no
+ * GDB command is in flight.
  */
 extern volatile bool platform_gdb_idle;
 

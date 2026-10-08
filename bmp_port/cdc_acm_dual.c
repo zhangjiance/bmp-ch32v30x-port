@@ -7,19 +7,17 @@
  *   interface 2/3  target UART (aux) (CDC ACM, bulk, USART3 on PB10/PB11)
  *   interface 4    DFU runtime       (no endpoints)
  *
- * The DFU runtime interface exists so the probe can be sent back into
- * ch32_dfu_boot: dfu-util -e (DFU_DETACH) calls platform_request_boot(), which
+ * The DFU runtime interface exists so the probe can be sent back into the
+ * bootloader: dfu-util -e (DFU_DETACH) calls platform_request_boot(), which
  * writes the BKP hand-shake and resets; the bootloader then starts in DFU mode
  * instead of booting this application again.  "monitor bootloader" uses the
  * same platform hook.
  *
- * No RTT: this port deliberately provides only the GDB port and the target UART
- * (like bmp-hpm-port minus its RTT multiplexing, and unlike ch32v305_bmp which
- * adds a third CDC port for RTT).
+ * No RTT: this port deliberately provides only the GDB port and the target UART,
+ * with no third CDC port.
  *
  * WinUSB for the DFU runtime interface is announced through Microsoft OS 1.0
- * (WCID) descriptors, the same way ch32_hello_world, bmp-hpm-port and
- * ch32_dfu_boot do it, so Windows installs the driver automatically (no Zadig
+ * (WCID) descriptors, so Windows installs the driver automatically (no Zadig
  * step, so "dfu-util -e" works out of the box) while the two CDC functions keep
  * their COM ports.
  */
@@ -231,9 +229,8 @@ static const char *string_descriptor_cb(uint8_t speed, uint8_t index)
 /* ------------------------------------------------------------------ *
  * Microsoft OS 1.0 (WCID): WinUSB for the DFU runtime interface
  *
- * Same approach and the same device layout as ch32_hello_world, bmp-hpm-port and
- * ch32_dfu_boot (two CDC functions plus a DFU runtime interface in a
- * 0xEF/0x02/0x01 composite with no interface association descriptors): the DFU
+ * Device layout: two CDC functions plus a DFU runtime interface in a
+ * 0xEF/0x02/0x01 composite with no interface association descriptors.  The DFU
  * runtime is the only interface advertised here, with the "WINUSB" compatible
  * ID, so Windows installs WinUSB for it automatically and "dfu-util -e" works
  * without a manual Zadig step.  The two CDC functions are deliberately NOT
@@ -650,7 +647,7 @@ static int dfu_control_request(uint8_t busid, struct usb_setup_packet *setup,
 
     switch (setup->bRequest) {
         case DFU_DETACH:
-            /* dfu-util -e: reset into ch32_dfu_boot.  Never returns. */
+            /* dfu-util -e: reset into the bootloader.  Never returns. */
             platform_request_boot();
             return 0;
         case DFU_GETSTATUS: {

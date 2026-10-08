@@ -26,7 +26,7 @@ set(CMAKE_C_FLAGS_RELEASE "-Os -g0")
 
 # MCU specific flags
 #
-# NOTE: no -flto here, unlike ch32v305_bmp.
+# NOTE: no -flto here.
 # usb_dc_low_level_init() is a __WEAK function in the CherryUSB ch32hs driver
 # that main.c overrides with a strong definition. With LTO the weak definition
 # gets inlined into usb_dc_init() before the linker ever sees the two, so the

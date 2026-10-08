@@ -11,7 +11,7 @@ MEMORY
    CH32V30x_D8 - CH32V303CB-CH32V303RB
 */
 
-/* Application partition behind the ch32_dfu_boot DFU bootloader.
+/* Application partition behind the DFU bootloader.
    The bootloader owns the first 32 KB (0x0000-0x7FFF, app start 0x00008000 as
    configured by BOOT_APP_OFFSET in shared/boot_protocol.h) and jumps here, so .init
    .vector table now live at 0x8000. The startup code does

@@ -6,11 +6,11 @@
  * The device is a composite:
  *   interface 0/1  GDB server            (CDC ACM, WinUSB)
  *   interface 2/3  target UART (aux)     (CDC ACM, WinUSB)
- *   interface 4    DFU runtime           (custom handler: hands over to
- *                                         ch32_dfu_boot on DFU_DETACH, so
- *                                         "dfu-util -e" reaches the bootloader)
+ *   interface 4    DFU runtime           (custom handler: hands over to the
+ *                                         bootloader on DFU_DETACH, so
+ *                                         "dfu-util -e" reaches it)
  *
- * USBHS is high speed, like ch32v305_bmp / ch32_dfu_boot / ch32_hello_world.
+ * The controller runs USBHS in high speed.
  */
 #ifndef USB_CONFIG_H
 #define USB_CONFIG_H
@@ -30,8 +30,7 @@
 #define CONFIG_USBDEV_REQUEST_BUFFER_LEN  512
 #define CONFIG_USBDEV_EP_NUM              8
 
-/* WCH's vendor id, same as ch32_dfu_boot (1a86:df11) and ch32_hello_world
- * (1a86:df12), with the Black Magic Probe's product id kept so host tooling
+/* WCH's vendor id, with the Black Magic Probe's product id kept so host tooling
  * that keys off the PID still recognises the probe.
  *
  * Note this is part of the Windows hardware id (USB\VID_1A86&PID_6018&REV_xxxx):

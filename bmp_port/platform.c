@@ -2,8 +2,8 @@
  * Platform hooks required by platform_support.h, CH32V30x flavour.
  *
  * The board exposes no target power switch, no Vref ADC and no SPI, so the
- * optional hooks stay no-ops / fixed values (same as bmp-hpm-port and
- * ch32v305_bmp).  RTT is deliberately not enabled in this port.
+ * optional hooks stay no-ops / fixed values.  RTT is deliberately not enabled
+ * in this port.
  */
 
 #include "general.h"
@@ -40,7 +40,7 @@ const char *platform_target_voltage(void)
 
 /*
  * "monitor bootloader" (and DFU_DETACH from dfu-util -e): hand the device over
- * to ch32_dfu_boot.  The BKP register hand-shake survives the reset, so the
+ * to the bootloader.  The BKP register hand-shake survives the reset, so the
  * bootloader stays in DFU mode instead of jumping straight back into this
  * application.
  */

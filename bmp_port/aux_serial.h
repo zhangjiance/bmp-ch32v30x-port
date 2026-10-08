@@ -1,9 +1,9 @@
 /*
  * aux_serial.h
  *
- * Target UART ("aux serial") of the CH32V30x BMP port: USART3 on PB10/PB11,
- * the same pins ch32v305_bmp uses.  It backs the second CDC port so a terminal
- * on the host can talk to the target's UART.
+ * Target UART ("aux serial") of the CH32V30x BMP port: USART3 on PB10/PB11.
+ * It backs the second CDC port so a terminal on the host can talk to the
+ * target's UART.
  *
  * The port layer owns this interface (the blackmagic core only knows about it
  * through the platform's USB glue), so the API is deliberately small.
