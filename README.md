@@ -1,106 +1,114 @@
 # bmp-ch32v30x-port
 
-Black Magic Probe（BMP）在 CH32V30x（USBHS，高速）上的端口工程，作为
-`ch32_dfu_boot` 的**应用程序**运行。
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-结构对齐 `bmp-hpm-port`：端口层集中在 `bmp_port/`，`main.c` 在顶层，板级 BSP 在
-`boards/<board>/`，构建约定沿用 `ch32_dfu_boot` / `ch32_hello_world`：
+Black Magic Probe (BMP) ported to the CH32V30x, driving its high-speed USB
+device controller (USBHS). The firmware is built as the **application image** of
+a DFU bootloader: the bootloader owns the first 32 KB of flash and this
+application starts at `0x08008000`.
 
 ```
-CMakeLists.txt            顶层：工具链、板级选择、链接、objcopy
-main.c                    应用入口
-CMakePresets.json         release / debug 预设
-bmp_port/                 端口层：USB、GPIO 位操作 SWD/JTAG、目标串口、定时、boot 握手、MCU glue
-bmp_port/CMakeLists.txt   端口源清单 + blackmagic 源清单与 include（对齐 hpm 的组织方式）
-cmake/wch_riscv.cmake     工具链（riscv-wch-elf-）
-blackmagic/               子仓：BMP 核心与 target 驱动
-third_party_components/CherryUSB/  子仓：USB 协议栈 + CH32V30x USBHS 端口
-SDK/                      WCH ch32v30x 外设库
-boards/ch32v30x_bmp/      板级 BSP
-linkfile/flash_dfu.ld     应用链接脚本（0x00008000，96K）
-shared/boot_protocol.h    boot 与 app 的约定（分区、BKP 触发）
+CMakeLists.txt            top level: toolchain, board selection, link, objcopy
+main.c                    application entry point
+CMakePresets.json         release / debug presets
+bmp_port/                 port layer: USB, bit-banged SWD/JTAG, target UART,
+                          timing, bootloader handshake, MCU glue
+bmp_port/CMakeLists.txt   port sources + blackmagic sources and includes
+cmake/wch_riscv.cmake     toolchain file (riscv-wch-elf-)
+blackmagic/               submodule: BMP core and target drivers
+third_party_components/CherryUSB/   submodule: USB stack + CH32V30x USBHS port
+SDK/                      WCH ch32v30x peripheral library
+boards/ch32v30x_bmp/      board BSP
+linkfile/flash_dfu.ld     application linker script (0x00008000, 96K)
+shared/boot_protocol.h    bootloader/application contract (partition, BKP)
 ```
 
-## 引脚（与 `ch32v305_bmp` 一致，直接用同一根调试排线）
+## Pins
 
-| 功能 | 引脚 |
+| Function | Pin |
 |---|---|
 | SWCLK / TCK | PB14 |
 | SWDIO / TMS | PB15 |
 | TDI | PB13 |
 | TDO | PB12 |
-| 状态 LED | PA8 |
-| 目标串口 TX (USART3) | PB10 |
-| 目标串口 RX (USART3) | PB11 |
+| Status LED | PA8 |
+| Target UART TX (USART3) | PB10 |
+| Target UART RX (USART3) | PB11 |
 
-nTRST / nSRST 未接线（空实现）。引脚定义在 `bmp_port/jtag_port.h`。
+nTRST / nSRST are not wired (empty implementations). The pin definitions live in
+`bmp_port/jtag_port.h`.
 
-SWD/JTAG 只做 **GPIO 位操作**（`bmp_port/jtag_port.h` 提供 `PIN_*` 宏，
-`swdptap.c` / `jtagtap.c` 与 `bmp-hpm-port` 逐字共用），不搬 hpm 的 SPI 加速，
-这样时序完全确定。
+SWD/JTAG is **GPIO bit-banging only** (the `PIN_*` macros in
+`bmp_port/jtag_port.h`); there is no SPI acceleration path, so the timing stays
+fully deterministic.
 
-## USB 设备（复合设备，1a86:6018）
+## USB device (composite, 1a86:6018)
 
-| 接口 | 功能 |
+| Interface | Function |
 |---|---|
-| 0 / 1 | GDB server（CDC ACM） |
-| 2 / 3 | 目标串口 UART（CDC ACM，USART3） |
-| 4 | DFU runtime（无端点） |
+| 0 / 1 | GDB server (CDC ACM) |
+| 2 / 3 | target UART (CDC ACM, USART3) |
+| 4 | DFU runtime (no endpoints) |
 
-- **DFU runtime（接口 4）用 Microsoft OS 1.0（WCID）**：0xEE 字符串 + `bRequest=0x20`，
-  Compatible ID = `WINUSB`，并带 `DeviceInterfaceGUIDs` 扩展属性（必须，CherryUSB 对
-  `wIndex=5` 会直接解引用 `comp_id_property`）。Windows **自动装 WinUSB**，`dfu-util -e`
-  开箱可用，不需要 Zadig；做法与 `ch32_hello_world` / `bmp-hpm-port` / `ch32_dfu_boot` 一致。
-- Windows 把 WCID 结果按 `VID/PID/bcdDevice` 缓存在
-  `HKLM\SYSTEM\CurrentControlSet\Control\usbflags`，所以**改 `bcdDevice`（或 VID/PID）
-  才会让它重新询问**。
-- GDB / 目标串口两个 CDC 功能**故意不列入 WCID**，Windows 继续用 inbox usbser.sys，
-  因此它们仍是 COM 口（与 `bmp-hpm-port` / `ch32_hello_world` 的用法一致）。
-- DFU 接口的 `iInterface` 指向字符串 6 = `"Black Magic Firmware Upgrade"`，所以
-  `dfu-util -l` 里 `name=` 不再显示 `UNKNOWN`。
-- VID 用 `1a86`（WCH，与 `ch32_dfu_boot` 的 `1a86:df11`、`ch32_hello_world` 的
-  `1a86:df12` 同源），PID 保留 Black Magic 的 `0x6018`。
-- `bcdUSB` = 2.0；`bcdDevice` = `0x0103`（属于 Windows 硬件 ID 与 usbflags 缓存键，
-  每次改描述符/WCID 数据就 +1，用来强制 Windows 重新询问并重装）。
-- **不含 RTT**：本端口只提供 GDB 口和目标串口，不额外加 RTT 虚拟串口。
+- **The DFU runtime interface (4) announces itself through Microsoft OS 1.0
+  descriptors (WCID)**: the 0xEE string plus `bRequest = 0x20`, Compatible ID
+  `WINUSB`, and the `DeviceInterfaceGUIDs` extended property (required - CherryUSB
+  dereferences `comp_id_property` for `wIndex = 5`). Windows then **binds WinUSB
+  automatically**, so `dfu-util -e` works out of the box and no Zadig is needed.
+- Windows caches the WCID result per `VID/PID/bcdDevice` in
+  `HKLM\SYSTEM\CurrentControlSet\Control\usbflags`, so `bcdDevice` (or the VID/PID)
+  has to change to make it ask again.
+- The two CDC functions (GDB and target UART) are **deliberately not listed** in
+  the WCID data, so Windows keeps using the inbox usbser.sys driver and they stay
+  COM ports.
+- The DFU interface `iInterface` points at string 6,
+  `"Black Magic Firmware Upgrade"`, so `dfu-util -l` shows a proper `name=`
+  instead of `UNKNOWN`.
+- VID is WCH's `0x1A86` (same vendor as the matching DFU bootloader's
+  `1A86:DF11`); the PID stays Black Magic's `0x6018`.
+- `bcdUSB` = 2.0, `bcdDevice` = `0x0103`. `bcdDevice` is part of the Windows
+  hardware ID and of the usbflags cache key, so bump it whenever the descriptors
+  or the WCID data change, to force Windows to re-enumerate and reinstall.
+- **No RTT**: this port exposes the GDB port and the target UART only.
 
-## 与 bootloader 配合
+## Bootloader integration
 
-- 应用链接在 `0x00008000`（`linkfile/flash_dfu.ld`，96 KB），与
-  `shared/boot_protocol.h` 里的 `BOOT_APP_OFFSET` 一致。
-- 回到 bootloader 有两条路径，都走 `bmp_port/boot_trigger_ch32v30x.c` 的
-  BKP 握手（跨 `NVIC_SystemReset()` 保留）：
-  - `dfu-util -e`（DFU_DETACH）→ `platform_request_boot()`
-  - GDB 侧 `monitor bootloader`
+- The application links at `0x00008000` (`linkfile/flash_dfu.ld`, 96 KB), matching
+  `BOOT_APP_OFFSET` in `shared/boot_protocol.h`.
+- Two paths return to the bootloader, both going through the BKP handshake in
+  `bmp_port/boot_trigger_ch32v30x.c` (it survives `NVIC_SystemReset()`):
+  - `dfu-util -e` (DFU_DETACH) calls `platform_request_boot()`
+  - `monitor bootloader` from the GDB side
 
-## 构建
+## Build
 
 ```sh
 cmake --preset ch32v30x_bmp-release
 cmake --build --preset ch32v30x_bmp-release
 ```
 
-产物：`build/ch32v30x_bmp-release/bmp-ch32v30x-port.{elf,hex,bin}`。
+Artifacts: `build/ch32v30x_bmp-release/bmp-ch32v30x-port.{elf,hex,bin}`.
 
-## 烧录 / 使用
+## Flashing / usage
 
-1. 先烧 `ch32_dfu_boot`（bootloader，占前 32 KB）。
-2. 按住 BOOT 上电进入 DFU，烧写本应用：
+1. Flash a matching DFU bootloader first (it owns its own 32 KB region at
+   `0x08000000`).
+2. Hold BOOT while powering up to enter DFU mode, then write this application:
    ```sh
    dfu-util -d 1a86 -s 0x08008000:leave -D build/ch32v30x_bmp-release/bmp-ch32v30x-port.bin
    ```
-3. 之后用 GDB 连接：
+3. Then connect with GDB:
    ```sh
    arm-none-eabi-gdb -ex 'target extended-remote /dev/ttyACM0'   # Linux
-   # Windows: COMx / WinUSB，取决于你的 gdb 构建
+   # Windows: COMx / WinUSB, depending on your GDB build
    ```
-4. 需要重新进入 bootloader 时：`dfu-util -e`（或 GDB 里 `monitor bootloader`）。
+4. To go back to the bootloader: `dfu-util -e` (or `monitor bootloader` in GDB).
 
-## 已知问题：GDB 长回复卡住（已规避，待专门修复）
+## Known issue: long GDB replies stall (worked around, proper fix pending)
 
-### 症状
+### Symptom
 
-`att 1`（或任何会产生长回复的操作）失败：
+`att 1` (or anything else that produces a long reply) fails:
 
 ```
 $qXfer:features:read:target.xml:0,7fb
@@ -111,66 +119,83 @@ Bad register packet; fetching a new packet
 Truncated register 22 in remote 'g' packet
 ```
 
-`mon jt`、`mon swd_scan` 这类短回复正常，所以表现为"目标能识别、但 attach 不上"。
-把 GDB 超时放大（`set remotetimeout 20`）也没用：那份回复要等到**下一条主机命令**
-之后才出现。
+Short replies (`mon jt`, `mon swd_scan`) work, so it looks like "the target is
+detected but attach fails". Raising the GDB timeout (`set remotetimeout 20`) does
+not help either: the reply only shows up after the **next host packet**.
 
-### 原因
+### Cause
 
-1. **协议层**：attach 成功后 GDB 立即读 RISC-V 目标描述 XML（本目标约 4.5 KB），按
-   stub 广播的 `PacketSize` 分块。包尺寸为 2048 时，第一块在线上正好 2048 字节。
-2. **控制器层**：CH32V30x USBHS 的 IN 端点一次只装 1 个 max-packet（512 字节）
-   （`usbd_ep_start_write()` 用 `MIN(len, ep_mps)`），其余必须由 USBHS 中断里的
-   "续包"分支补发，完成回调也来自中断。
-3. **端口层**：旧 `gdb_in_send()` 交包后死等，**250 ms 等不到就清状态**
-   （`gdb_in_len = 0`）。于是硬件只发出第一个 512 字节，而驱动仍认为传输未完成；
-   下一条回复再调 `usbd_ep_start_write()` 会重置驱动的 `xfer_buf`/`xfer_len`，两边
-   状态不一致，剩下的包最终在中断被服务时才出去（即"下一条主机命令之后"）。GDB 把
-   这份迟到的 XML 当成下一条 `$g` 的回复（`Bad register packet`），再拿内置寄存器表
-   去量那个 33×4B 的寄存器包（`Truncated register 22`）。
+1. **Protocol**: after an attach GDB immediately reads the RISC-V target
+   description XML (about 4.5 KB for this target), in chunks sized by the
+   `PacketSize` the stub announces. At a packet size of 2048 the first chunk is
+   exactly 2048 bytes on the wire.
+2. **Controller**: the CH32V30x USBHS IN endpoint only takes one max-packet-size
+   chunk (512 bytes) per `usbd_ep_start_write()` (it uses `MIN(len, ep_mps)`);
+   everything beyond that has to be continued from the USBHS interrupt, and the
+   completion callback comes from that same interrupt.
+3. **Port**: the old `gdb_in_send()` handed the packet over and then waited,
+   giving up and clearing its state after **250 ms**. The controller had therefore
+   sent only the first 512 bytes while the driver still considered the transfer
+   unfinished; the next reply called `usbd_ep_start_write()` again, which resets
+   the driver's `xfer_buf`/`xfer_len`, and the remaining packets only left once the
+   interrupt was serviced (that is, "after the next host packet"). GDB then treated
+   the late XML as the answer to its next `$g` request (`Bad register packet`) and
+   measured the 33 x 4 byte register packet with its built-in register table
+   (`Truncated register 22`).
 
-**不是** 位操作（SWD/JTAG）的问题：XML 生成只做字符串格式化、不访问目标，而同一段
-bitbang 路径上的短回复始终正常。
+This is **not** a bit-banging (SWD/JTAG) problem: building that XML is pure string
+formatting and does not touch the target, while short replies over the very same
+bit-banged path always worked.
 
-### 当前规避做法
+### Current workaround
 
-- `bmp_port/CMakeLists.txt`：`GDB_PACKET_BUFFER_SIZE=496`，回复加帧格式 ≤500 字节
-  < 512，**任何回复都不跨 USB 包**，不再需要驱动续包；`bmp_port/cdc_acm_dual.c` 里有
-  编译期 `#error` 守住这个不变量。
-- 发送路径改为"拷贝进专用在飞缓冲、由硬件自行发出"，最长 5 ms 的保护性等待**只**
-  用于避免覆盖仍在被读出的缓冲；正确性不依赖完成回调，也不会中途清掉驱动的传输状态。
-- **对客户端的要求**：单次 `m`（十六进制读内存）长度不能超过
-  `GDB_PACKET_BUFFER_SIZE / 2`（当前 **248 字节**，判定在 `blackmagic/src/gdb_main.c`
-  的 `len > GDB_PACKET_BUFFER_SIZE / 2U`），超了会直接回 `E02`。真正的 GDB 会按广播的
-  `PacketSize` 自动分块，但自己实现协议的工具必须自己收敛——例如
-  `geekdebugprobe-webui` 的 `static/blackmagic-utils` 回读固定 256 字节/块且不解析
-  `PacketSize`，在 496 的包尺寸下会出现大面积 `E02`。另外留意这类工具"读不回就用源
-  数据补齐 CRC"的兜底：那样得到的 CRC 相等并不代表读回校验通过。
+- `bmp_port/CMakeLists.txt`: `GDB_PACKET_BUFFER_SIZE=496`, so a reply plus its
+  framing is at most 500 bytes < 512 and **no reply ever crosses a USB packet**,
+  which removes the need for the driver's continuation altogether. A build-time
+  `#error` in `bmp_port/cdc_acm_dual.c` guards that invariant.
+- The send path copies the reply into a dedicated in-flight buffer and lets the
+  controller put it on the wire; the remaining 5 ms wait is only there to avoid
+  overwriting a buffer that is still being read out. Correctness does not depend on
+  the completion callback, and the driver's transfer state is never reset.
+- **Client requirement**: a single `m` (hex memory read) must not exceed
+  `GDB_PACKET_BUFFER_SIZE / 2` (currently **248 bytes**; the check is
+  `len > GDB_PACKET_BUFFER_SIZE / 2U` in `blackmagic/src/gdb_main.c`), otherwise
+  the stub answers `E02`. GDB itself chunks its requests by the announced
+  `PacketSize`, but a client that speaks the protocol on its own has to do the
+  same - a browser flasher that reads back in fixed 256 byte chunks sees a flood
+  of `E02` at 496. Also watch out for clients that fill the CRC with source data
+  for the chunks they could not read back: their checksums then match without
+  anything having been verified.
 
-代价：`m`/`X` 每次约 230 字节（原来约 1020），`load`/`dump` 往返次数约 4 倍
-（100 KB 量级多花 0.5 s 左右，基本无感）；RAM 反而省了约 8 KB。
+Cost: `m`/`X` move about 230 bytes per round trip instead of about 1020, so
+`load`/`dump` need roughly 4x as many round trips (about 0.5 s more for 100 KB,
+which is negligible); RAM usage drops by about 8 KB.
 
-### 后续正解（待办）
+### Proper fix (TODO)
 
-1. **驱动**（`third_party_components/CherryUSB/port/wch/ch32v30x/usb_dc_ch32v30x.c`）：
-   `USBD_IRQHandler` 每次中断只处理 `INT_ST` 里的一个端点，然后清掉全局
-   `USBHS_TRANSFER_FLAG`；端点一多（本设备 3 个 CDC + DFU，且 OUT 端点常驻 armed），
-   IN 完成事件就可能被丢掉。改成循环处理所有 pending 端点
-   （`while (USBHS_DEVICE->INT_FG & USBHS_TRANSFER_FLAG)`）。
-   参考：同一颗 CH32V305 上的 `ch32v305_bmp` 用另一份端口文件
-   （`port/ch32/ch32hs/usb_dc_usbhs.c`），C 代码与本工程逐字相同、包尺寸也是 2048，
-   但端点更少，且它的发送侧无限等、从不中途清状态，所以没暴露这个问题。
-2. **端口**：超时后不要重置驱动的传输状态（或干脆无限等）。
-3. **定位手段**：在驱动里加计数（续包次数 / 完成回调次数 / 丢事件次数），用 `mon`
-   命令或目标串口打印，先量化"丢的是哪次事件"，再改代码。
-4. 修好后把 `GDB_PACKET_BUFFER_SIZE` 提回 2048（或更大），`load`/`dump` 往返更少。
-5. 独立小改进（与本次无关）：`blackmagic` 的 `riscv_debug.c` 里 DMI `RV_DMI_TOO_SOON`
-   重试是无限循环，链路边缘时表现为"卡死且无提示"，改成有上限并报错更好定位。
+1. **Driver** (`third_party_components/CherryUSB/port/wch/ch32v30x/usb_dc_ch32v30x.c`):
+   `USBD_IRQHandler` handles only one endpoint per interrupt (the one in `INT_ST`)
+   and then clears the global `USBHS_TRANSFER_FLAG`. With enough endpoints (this
+   device has three CDC functions plus DFU, and its OUT endpoint is always armed)
+   an IN completion can get lost. Handle all pending endpoints in a loop
+   (`while (USBHS_DEVICE->INT_FG & USBHS_TRANSFER_FLAG)`).
+   Note that multi-packet OUT transfers do work on this controller (the DFU
+   bootloader receives 4 KB transfers), so only the IN direction is unreliable.
+2. **Port**: do not reset the driver's transfer state on timeout (or wait forever).
+3. **Instrumentation**: add counters in the driver (continuations, completion
+   callbacks, dropped events) and print them from a `mon` command or the target
+   UART, so the event that gets lost can be identified before changing any code.
+4. Once fixed, raise `GDB_PACKET_BUFFER_SIZE` back to 2048 (or more) to cut down
+   the number of round trips for `load`/`dump`.
+5. Unrelated small improvement: the DMI `RV_DMI_TOO_SOON` retry loops in
+   `blackmagic`'s `riscv_debug.c` are unbounded, so a marginal link shows up as a
+   hang with no message; a bounded retry plus an error message locates it much
+   faster.
 
-## 说明
+## Notes
 
-- 子仓：`blackmagic`（`https://codeberg.org/mTOTm/blackmagic.git`，
-  `dev/jiance.zhang/main_test`）与 `third_party_components/CherryUSB`
-  （`ch32v30x-usbhs`，含 CH32V30x USBHS 设备控制器端口）。
-- target 驱动清单在 `bmp_port/CMakeLists.txt` 里按需裁剪（应用分区 96 KB），
-  需要更多芯片支持时往里加文件即可。
+- Submodules: `blackmagic` (`https://codeberg.org/mTOTm/blackmagic.git`,
+  `dev/jiance.zhang/main_test`) and `third_party_components/CherryUSB`
+  (`ch32v30x-usbhs`, containing the CH32V30x USBHS device controller port).
+- The target driver list is trimmed in `bmp_port/CMakeLists.txt` to fit the 96 KB
+  application partition; add files there to support more chips.
