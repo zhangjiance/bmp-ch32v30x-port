@@ -1,0 +1,58 @@
+{
+    "version": 3,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 22,
+        "patch": 0
+    },
+    "configurePresets": [
+        {
+            "name": "base",
+            "hidden": true,
+            "description": "Base preset for the CH32V30x Black Magic Probe port",
+            "generator": "Ninja",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+            }
+        },
+        {
+            "name": "base-debug",
+            "hidden": true,
+            "inherits": "base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug"
+            }
+        },
+        {
+            "name": "ch32v30x_bmp-release",
+            "displayName": "CH32V30x BMP (Release)",
+            "inherits": "base",
+            "cacheVariables": {
+                "BOARD": "ch32v30x_bmp"
+            },
+            "binaryDir": "${sourceDir}/build/ch32v30x_bmp-release"
+        },
+        {
+            "name": "ch32v30x_bmp-debug",
+            "displayName": "CH32V30x BMP (Debug)",
+            "inherits": "base-debug",
+            "cacheVariables": {
+                "BOARD": "ch32v30x_bmp"
+            },
+            "binaryDir": "${sourceDir}/build/ch32v30x_bmp-debug"
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "ch32v30x_bmp-release",
+            "configurePreset": "ch32v30x_bmp-release",
+            "jobs": 8
+        },
+        {
+            "name": "ch32v30x_bmp-debug",
+            "configurePreset": "ch32v30x_bmp-debug",
+            "jobs": 8
+        }
+    ]
+}

@@ -1,0 +1,180 @@
+/*
+ * CH32V305 port of the bmp-hpm-port `jtag_port.h`.
+ *
+ * Only these PIN_* / LED_* / TIMESTAMP_GET macros are platform specific:
+ * swdptap.c and jtagtap.c are shared verbatim with bmp-hpm-port and only
+ * call into this header.
+ *
+ * Pin mapping is kept identical to the ch32v305_dap board so the same
+ * hardware can run either firmware.
+ *   PB14 -> SWCLK/TCK
+ *   PB15 -> SWDIO/TMS   (driven open-drain, see board.c)
+ *   PB13 -> TDI
+ *   PB12 -> TDO
+ *   PA8  -> status LED
+ */
+#ifndef __JTAG_PORT_H__
+#define __JTAG_PORT_H__
+
+#include "ch32v30x.h"
+#include "ch32v30x_gpio.h"
+#include "timing.h"
+
+#ifndef __STATIC_INLINE
+#define __STATIC_INLINE static inline
+#endif
+#ifndef __STATIC_FORCEINLINE
+#define __STATIC_FORCEINLINE __attribute__((always_inline)) static inline
+#endif
+#ifndef __WEAK
+#define __WEAK __attribute__((weak))
+#endif
+
+/* ---------------- pin assignment ---------------- */
+#define PIN_TCK_GPIO_PORT GPIOB
+#define PIN_TCK_GPIO_PIN  GPIO_Pin_14
+
+#define PIN_TMS_GPIO_PORT GPIOB
+#define PIN_TMS_GPIO_PIN  GPIO_Pin_15
+
+#define PIN_TDI_GPIO_PORT GPIOB
+#define PIN_TDI_GPIO_PIN  GPIO_Pin_13
+
+#define PIN_TDO_GPIO_PORT GPIOB
+#define PIN_TDO_GPIO_PIN  GPIO_Pin_12
+
+#define PIN_LED_GPIO_PORT GPIOA
+#define PIN_LED_GPIO_PIN  GPIO_Pin_8
+
+/* Compiler barrier, keeps the GPIO accesses in program order. */
+#define PIN_BARRIER() __asm__ volatile("" ::: "memory")
+
+/* ---------------- TCK / SWCLK ---------------- */
+__STATIC_FORCEINLINE void PIN_SWCLK_TCK_SET(void)
+{
+    PIN_TCK_GPIO_PORT->BSHR = PIN_TCK_GPIO_PIN;
+    PIN_BARRIER();
+}
+
+__STATIC_FORCEINLINE void PIN_SWCLK_TCK_CLR(void)
+{
+    PIN_TCK_GPIO_PORT->BCR = PIN_TCK_GPIO_PIN;
+    PIN_BARRIER();
+}
+
+/* ---------------- TMS / SWDIO ----------------
+ * SWDIO is driven open-drain: writing 1 releases the line so the target can
+ * drive it, which means switching direction needs no GPIO mode change.
+ */
+__STATIC_FORCEINLINE uint32_t PIN_TMS_SWDIO_IN(void)
+{
+    uint32_t sta = (PIN_TMS_GPIO_PORT->INDR & PIN_TMS_GPIO_PIN) ? 1U : 0U;
+    PIN_BARRIER();
+    return sta;
+}
+
+__STATIC_FORCEINLINE void PIN_TMS_SWDIO_OUT(uint32_t bit)
+{
+    if (bit) {
+        PIN_TMS_GPIO_PORT->BSHR = PIN_TMS_GPIO_PIN;
+    } else {
+        PIN_TMS_GPIO_PORT->BCR = PIN_TMS_GPIO_PIN;
+    }
+    PIN_BARRIER();
+}
+
+/*
+ * Direction switching is done by changing the GPIO mode:
+ * jtagtap.c only calls PIN_TMS_SWDIO_OUT() and never SET_OUT(), so TMS has to
+ * be a real push-pull output by default or JTAG cannot drive the line at all.
+ * swdptap.c calls SET_OUT()/SET_IN() around each turnaround, so SWD gets the
+ * input mode it needs.
+ */
+__STATIC_FORCEINLINE void PIN_TMS_SWDIO_SET_OUT(void)
+{
+    GPIO_InitTypeDef gpio = { 0 };
+    gpio.GPIO_Pin = PIN_TMS_GPIO_PIN;
+    gpio.GPIO_Speed = GPIO_Speed_50MHz;
+    gpio.GPIO_Mode = GPIO_Mode_Out_PP;
+    GPIO_Init(PIN_TMS_GPIO_PORT, &gpio);
+    PIN_BARRIER();
+}
+
+__STATIC_FORCEINLINE void PIN_TMS_SWDIO_SET_IN(void)
+{
+    GPIO_InitTypeDef gpio = { 0 };
+    gpio.GPIO_Pin = PIN_TMS_GPIO_PIN;
+    gpio.GPIO_Speed = GPIO_Speed_50MHz;
+    gpio.GPIO_Mode = GPIO_Mode_IPU;
+    GPIO_Init(PIN_TMS_GPIO_PORT, &gpio);
+    PIN_BARRIER();
+}
+
+/* ---------------- TDI ---------------- */
+__STATIC_FORCEINLINE uint32_t PIN_TDI_IN(void)
+{
+    uint32_t sta = (PIN_TDI_GPIO_PORT->INDR & PIN_TDI_GPIO_PIN) ? 1U : 0U;
+    PIN_BARRIER();
+    return sta;
+}
+
+__STATIC_FORCEINLINE void PIN_TDI_OUT(uint32_t bit)
+{
+    if (bit) {
+        PIN_TDI_GPIO_PORT->BSHR = PIN_TDI_GPIO_PIN;
+    } else {
+        PIN_TDI_GPIO_PORT->BCR = PIN_TDI_GPIO_PIN;
+    }
+    PIN_BARRIER();
+}
+
+/* ---------------- TDO ---------------- */
+__STATIC_FORCEINLINE uint32_t PIN_TDO_IN(void)
+{
+    uint32_t sta = (PIN_TDO_GPIO_PORT->INDR & PIN_TDO_GPIO_PIN) ? 1U : 0U;
+    PIN_BARRIER();
+    return sta;
+}
+
+/* ---------------- nTRST / nRESET (not wired on this board) ---------------- */
+__STATIC_FORCEINLINE uint32_t PIN_nTRST_IN(void)
+{
+    return 0U;
+}
+
+__STATIC_FORCEINLINE void PIN_nTRST_OUT(uint32_t bit)
+{
+    (void)bit;
+}
+
+__STATIC_FORCEINLINE uint32_t PIN_nRESET_IN(void)
+{
+    return 0U;
+}
+
+__STATIC_FORCEINLINE void PIN_nRESET_OUT(uint32_t bit)
+{
+    (void)bit;
+}
+
+/* ---------------- LED ---------------- */
+__STATIC_INLINE void LED_CONNECTED_OUT(uint32_t bit)
+{
+    if (bit) {
+        PIN_LED_GPIO_PORT->BSHR = PIN_LED_GPIO_PIN;
+    } else {
+        PIN_LED_GPIO_PORT->BCR = PIN_LED_GPIO_PIN;
+    }
+}
+
+__STATIC_INLINE void LED_RUNNING_OUT(uint32_t bit)
+{
+    (void)bit;
+}
+
+__STATIC_INLINE uint32_t TIMESTAMP_GET(void)
+{
+    return platform_time_ms();
+}
+
+#endif /* __JTAG_PORT_H__ */
