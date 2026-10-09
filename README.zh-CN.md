@@ -60,7 +60,7 @@ SWD/JTAG 只做 **GPIO 位操作**（`bmp_port/jtag_port.h` 提供 `PIN_*` 宏�
   `dfu-util -l` 里 `name=` 不再显示 `UNKNOWN`。
 - VID 用 WCH 的 `0x1A86`（与配套 DFU bootloader 的 `1A86:DF11` 同厂商），PID 保留
   Black Magic 的 `0x6018`。
-- `bcdUSB` = 2.0；`bcdDevice` = `0x0103`。`bcdDevice` 属于 Windows 硬件 ID 与 usbflags
+- `bcdUSB` = 2.0；`bcdDevice` = `0x0104`。`bcdDevice` 属于 Windows 硬件 ID 与 usbflags
   缓存键，每次改描述符/WCID 数据就 +1，用来强制 Windows 重新枚举并重装。
 - **不含 RTT**：本端口只提供 GDB 口和目标串口。
 

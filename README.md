@@ -67,7 +67,7 @@ fully deterministic.
   instead of `UNKNOWN`.
 - VID is WCH's `0x1A86` (same vendor as the matching DFU bootloader's
   `1A86:DF11`); the PID stays Black Magic's `0x6018`.
-- `bcdUSB` = 2.0, `bcdDevice` = `0x0103`. `bcdDevice` is part of the Windows
+- `bcdUSB` = 2.0, `bcdDevice` = `0x0104`. `bcdDevice` is part of the Windows
   hardware ID and of the usbflags cache key, so bump it whenever the descriptors
   or the WCID data change, to force Windows to re-enumerate and reinstall.
 - **No RTT**: this port exposes the GDB port and the target UART only.

@@ -109,8 +109,9 @@ static const uint8_t device_descriptor[] = {
      * inquiry instead of reusing a cached, possibly failed, result.
      * Revision history of this port: 0x0100 WCID 1.0 with a NULL
      * comp_id_property, 0x0101 MS OS 2.0 experiment, 0x0102 first 1.0 rework,
-     * 0x0103 this one. */
-    USB_DEVICE_DESCRIPTOR_INIT(USB_2_0, 0xEF, 0x02, 0x01, USBD_VID, USBD_PID, 0x0103, 0x01)
+     * 0x0103 WCID where the property list was indexed past its end, 0x0104
+     * this one (property list indexed by interface number). */
+    USB_DEVICE_DESCRIPTOR_INIT(USB_2_0, 0xEF, 0x02, 0x01, USBD_VID, USBD_PID, 0x0104, 0x01)
 };
 
 static const uint8_t config_descriptor_hs[] = {
@@ -269,7 +270,8 @@ static const uint8_t msos_compat_id[] = {
 
 static uint8_t msos_ext_prop[MSOS_EXT_PROP_LEN];
 
-/* Returned for wValue != 0: a valid but empty property set. */
+/* Returned for every interface except the DFU runtime one: a valid but empty
+ * property set, so Windows keeps its inbox driver for the CDC functions. */
 static const uint8_t msos_ext_prop_empty[] = {
     0x0a, 0x00, 0x00, 0x00, /* dwLength = 10 */
     0x00, 0x01,             /* bcdVersion 1.0 */
@@ -277,8 +279,16 @@ static const uint8_t msos_ext_prop_empty[] = {
     0x00, 0x00,             /* bCount = 0 */
 };
 
-/* CherryUSB indexes this array with setup->wValue, so keep two entries. */
-static const uint8_t *msos_ext_prop_list[2];
+/*
+ * CherryUSB indexes this array with setup->wValue, and for wIndex = 5 Windows
+ * sets wValue to the *interface number* of the function it is asking about.
+ * The DFU runtime is interface 4 here, so the array has to reach index 4 -
+ * with only two entries the lookup read past the end and Windows got garbage
+ * instead of the DeviceInterfaceGUIDs, installed no WinUSB and dfu-util then
+ * failed with LIBUSB_ERROR_NOT_FOUND.
+ */
+#define MSOS_IF_COUNT (DFU_INTF + 1U)
+static const uint8_t *msos_ext_prop_list[MSOS_IF_COUNT];
 
 static void msos_ext_prop_build(void)
 {
@@ -334,8 +344,9 @@ static void msos_ext_prop_build(void)
     msos_ext_prop[p++] = 0x00U;
     msos_ext_prop[p++] = 0x00U;
 
-    msos_ext_prop_list[0] = msos_ext_prop;
-    msos_ext_prop_list[1] = msos_ext_prop_empty;
+    for (i = 0U; i < MSOS_IF_COUNT; i++) {
+        msos_ext_prop_list[i] = (i == DFU_INTF) ? msos_ext_prop : msos_ext_prop_empty;
+    }
 }
 
 static const struct usb_msosv1_descriptor msosv1 = {
