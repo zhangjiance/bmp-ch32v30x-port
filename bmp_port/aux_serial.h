@@ -28,20 +28,35 @@ struct aux_line_coding {
     uint8_t stop_bits;
 };
 
+/*
+ * target -> host sink, supplied by the USB glue.  It copies the bytes into the
+ * USB transfer buffer and starts the endpoint; it is called from interrupt
+ * context and returns how many bytes it accepted, 0 meaning "the endpoint still
+ * holds the previous transfer, ask me again later".
+ */
+typedef uint32_t (*aux_serial_sink_fn)(const uint8_t *data, uint32_t len);
+
+/* Register the sink.  Must be called before aux_serial_init(). */
+void aux_serial_set_sink(aux_serial_sink_fn sink);
+
+/*
+ * Bring up USART3, its DMA channels (RX circular, TX on demand) and the
+ * interrupts that carry the data.  From here on both directions run on
+ * interrupts alone - the main loop is never involved.
+ */
 void aux_serial_init(void);
 bool aux_serial_pins_enabled(void);
+
+/*
+ * Called by the USB glue when the IN endpoint finished a transfer, so buffered
+ * target data can be forwarded without waiting for more UART traffic.
+ */
+void aux_serial_usb_ready(void);
 
 void aux_serial_set_encoding(const struct aux_line_coding *coding);
 void aux_serial_get_encoding(struct aux_line_coding *coding);
 
-/* target -> host: drain up to max bytes, returns how many were copied */
-uint32_t aux_serial_read(uint8_t *dst, uint32_t max);
-
 /* host -> target: queue bytes for transmission, returns how many were queued */
 uint32_t aux_serial_write(const uint8_t *src, uint32_t len);
-
-/* Push buffered target data to the host; driven from the GDB idle loops
- * (the CH32V30x device controller does not raise SOF events). */
-void aux_serial_poll(void);
 
 #endif /* AUX_SERIAL_H */

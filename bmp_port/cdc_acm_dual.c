@@ -46,7 +46,9 @@
 #define AUX_IN_EP  0x84
 
 #define GDB_CTRL_INTF 0
+#define GDB_DATA_INTF 1
 #define AUX_CTRL_INTF 2
+#define AUX_DATA_INTF 3
 #define DFU_INTF      4
 
 #define USB_XFER_SIZE 512U /* bulk max packet size at high speed */
@@ -93,7 +95,6 @@ static volatile bool aux_out_armed;
 /* target UART, target -> host */
 static USB_MEM_ALIGNX uint8_t aux_in_xfer[64];
 static volatile bool aux_in_busy;
-static volatile bool aux_dtr;
 
 /* MS OS 1.0 (WCID) vendor code, used by the 0xEE string descriptor and the
  * vendor requests; the descriptors are further down. */
@@ -507,8 +508,6 @@ char gdb_if_getchar(void)
         if (c >= 0) {
             return (char)c;
         }
-        /* Nothing from the host: keep the target UART flowing while waiting. */
-        aux_serial_poll();
     }
 }
 
@@ -528,7 +527,6 @@ char gdb_if_getchar_to(uint32_t timeout)
         if ((uint32_t)(board_time_ms() - start) >= timeout) {
             return (char)-1;
         }
-        aux_serial_poll();
     }
 }
 
@@ -579,59 +577,93 @@ static void usbd_cdc_acm_bulk_in_aux(uint8_t busid, uint8_t ep, uint32_t nbytes)
     (void)nbytes;
 
     aux_in_busy = false;
+    /* The endpoint is free again: hand the aux driver's buffered bytes over. */
+    aux_serial_usb_ready();
 }
 
 /*
- * Forward target UART bytes to the host when the port is open and no transfer
- * is in flight.  Driven from the GDB idle loops: the CH32V30x device controller
- * never raises SOF events, so there is no per-frame tick to hook.
+ * target -> host sink handed to the aux serial driver.  It is called from the
+ * UART/DMA interrupts (and from the completion callback above), copies the
+ * bytes into the USB transfer buffer and starts the endpoint.  Returning 0
+ * means the previous transfer is still in flight and the driver should keep the
+ * data buffered.
  */
-void aux_serial_poll(void)
+static uint32_t aux_usb_sink(const uint8_t *data, uint32_t len)
 {
-    uint32_t count;
-
-    if (aux_in_busy || !aux_dtr) {
-        return;
+    if (aux_in_busy) {
+        return 0U;
     }
-    count = aux_serial_read(aux_in_xfer, sizeof(aux_in_xfer));
-    if (count == 0U) {
-        return;
+    if (len > sizeof(aux_in_xfer)) {
+        len = sizeof(aux_in_xfer);
     }
-    /* Same check-then-arm serialisation as the GDB endpoint bookkeeping. */
-    gdb_usb_enter();
-    if (!aux_in_busy) {
-        aux_in_busy = true;
-        usbd_ep_start_write(0, AUX_IN_EP, aux_in_xfer, count);
+    for (uint32_t i = 0U; i < len; i++) {
+        aux_in_xfer[i] = data[i];
     }
-    gdb_usb_exit();
+    if (usbd_ep_start_write(0, AUX_IN_EP, aux_in_xfer, len) != 0) {
+        return 0U;
+    }
+    aux_in_busy = true;
+    return len;
 }
 
 /* ------------------------------------------------------------------ *
  * CDC ACM class hooks (weak in the class, overridden here)
  * ------------------------------------------------------------------ */
-void usbd_cdc_acm_set_dtr(uint8_t busid, uint8_t intf, bool dtr)
-{
-    (void)busid;
-
-    if (intf == AUX_CTRL_INTF) {
-        aux_dtr = dtr;
-    }
-}
-
+/*
+ * No usbd_cdc_acm_set_dtr() override on purpose: the aux port forwards target
+ * data as soon as it arrives, so it works with hosts/terminals that never
+ * assert DTR.
+ */
 void usbd_cdc_acm_set_line_coding(uint8_t busid, uint8_t intf, struct cdc_line_coding *coding)
 {
     struct aux_line_coding aux;
 
     (void)busid;
 
-    if ((intf != AUX_CTRL_INTF) || (coding == NULL)) {
+    /*
+     * The target UART is a transparent bridge: whatever rate the host puts in
+     * its terminal is what USART3 runs at.  Only the GDB function is ignored.
+     * Both the communication (2) and the data (3) interface are accepted,
+     * because hosts differ in which one they address.
+     */
+    if ((coding == NULL) || (intf == GDB_CTRL_INTF) || (intf == GDB_DATA_INTF)) {
         return;
     }
     aux.baudrate = coding->dwDTERate ? coding->dwDTERate : 115200U;
-    aux.data_bits = (coding->bDataBits == 7U) ? 7U : 8U;
-    aux.parity = coding->bParityType; /* 0 none, 1 odd, 2 even - same numbering */
-    aux.stop_bits = coding->bCharFormat ? 2U : 1U;
+    aux.data_bits = 8U;               /* the port only does 8 bit frames (9 with parity) */
+    aux.parity = coding->bParityType; /* 0 none, 1 odd, 2 even - same numbering as CDC */
+    aux.stop_bits = (coding->bCharFormat >= 2U) ? 2U : 1U;
     aux_serial_set_encoding(&aux);
+}
+
+/*
+ * Report the line coding the target UART is actually using.  CherryUSB's weak
+ * default pretends the port runs at 2 Mbaud, so a host that reads the coding
+ * before configuring would end up talking at a completely different rate than
+ * USART3 - and a loopback test cannot reveal that, since both directions then
+ * use the same wrong number.
+ */
+void usbd_cdc_acm_get_line_coding(uint8_t busid, uint8_t intf, struct cdc_line_coding *coding)
+{
+    struct aux_line_coding aux;
+
+    (void)busid;
+
+    if (coding == NULL) {
+        return;
+    }
+    if ((intf == GDB_CTRL_INTF) || (intf == GDB_DATA_INTF)) {
+        coding->dwDTERate = 115200U;
+        coding->bCharFormat = 0U;
+        coding->bParityType = 0U;
+        coding->bDataBits = 8U;
+        return;
+    }
+    aux_serial_get_encoding(&aux);
+    coding->dwDTERate = aux.baudrate;
+    coding->bCharFormat = (aux.stop_bits == 2U) ? 2U : 0U;
+    coding->bParityType = aux.parity;
+    coding->bDataBits = aux.data_bits;
 }
 
 /* ------------------------------------------------------------------ *
@@ -749,6 +781,10 @@ void cdc_acm_init(uint8_t busid, uint32_t reg_base)
     };
 
     build_serial_string();
+
+    /* Connect the aux driver's target -> host path to its USB endpoint before
+     * the UART interrupts can fire. */
+    aux_serial_set_sink(aux_usb_sink);
     aux_serial_init();
 
     /* Assemble the MS OS 1.0 extended properties (DeviceInterfaceGUIDs) for the

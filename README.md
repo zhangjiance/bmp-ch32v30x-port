@@ -73,6 +73,23 @@ fully deterministic.
   or the WCID data change, to force Windows to re-enumerate and reinstall.
 - **No RTT**: this port exposes the GDB port and the target UART only.
 
+## Target UART (USB2UART)
+
+The second CDC function (interfaces 2/3) is wired to USART3 (PB10/PB11). The whole
+path is **DMA + interrupt driven** and never depends on the main loop:
+
+- **target → host**: USART3 RX is written into a 256 byte buffer in a circle by DMA1
+  channel 3; the USART **idle interrupt** and the DMA half/full transfer interrupts
+  hand whatever arrived straight to the IN endpoint through a USB sink, and the
+  endpoint's completion callback (`aux_serial_usb_ready()`) continues with the rest.
+- **host → target**: the USB OUT callback queues into a 1 KB ring and DMA1 channel 2
+  sends one contiguous run at a time, its transfer complete interrupt picking up the
+  next one.
+- **No DTR gating**: data is forwarded as long as the host is reading, so terminals
+  that never assert DTR work too.
+- The UART therefore keeps flowing while a long GDB command is in progress; the old
+  implementation forwarded it from the `gdb_if_getchar()` idle loop, which stalled.
+
 ## Bootloader integration
 
 - The application links at `0x00008000` (`linkfile/flash_dfu.ld`, 96 KB), matching

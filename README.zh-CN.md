@@ -65,6 +65,19 @@ SWD/JTAG 只做 **GPIO 位操作**（`bmp_port/jtag_port.h` 提供 `PIN_*` 宏�
   缓存键，每次改描述符/WCID 数据就 +1，用来强制 Windows 重新枚举并重装。
 - **不含 RTT**：本端口只提供 GDB 口和目标串口。
 
+## 目标串口（USB2UART）
+
+第二路 CDC（接口 2/3）对接 USART3（PB10/PB11），整条通路是 **DMA + 中断驱动**，不依赖主循环：
+
+- **target → host**：USART3 RX 由 DMA1 通道 3 循环写入 256 字节缓冲；串口**空闲中断**
+  与 DMA 半满/全满中断把已到达的数据经 USB sink 直接写进 IN 端点，端点完成回调
+  （`aux_serial_usb_ready()`）接着搬剩下的部分。
+- **host → target**：USB OUT 回调把数据排入 1 KB 环形缓冲，DMA1 通道 2 一次发一段连续
+  区域，传输完成中断接着发下一段。
+- **不做 DTR 门控**：只要求主机在读数据，兼容不置 DTR 的终端。
+- 由此 GDB 正在执行长命令时串口也不会停顿——旧实现是靠 `gdb_if_getchar()` 的空闲
+  循环轮询转发的，命令期间会卡住。
+
 ## 与 bootloader 配合
 
 - 应用链接在 `0x00008000`（`linkfile/flash_dfu.ld`，96 KB），与
