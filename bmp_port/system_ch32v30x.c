@@ -18,6 +18,19 @@
 * If none of the define below is enabled, the HSI is used as System clock source. 
 */
 //#define SYSCLK_FREQ_HSE    HSE_VALUE
+/*
+ * This board carries a 24 MHz HSE (boards/ch32v30x_bmp/board.cmake defines
+ * HSE_VALUE = 24000000), so the WCH "48 MHz" recipe - PLL = HSE * 6, see
+ * SetSysClockTo48_HSE() below - actually runs the core at 144 MHz.  The WCH
+ * name is kept so this clock file stays comparable with upstream, but the real
+ * frequency is 144 MHz: SystemCoreClockUpdate() (called from board_init())
+ * reads the registers back as 144 MHz and every derived number uses that
+ * (SysTick / Delay_Init, the TIM3 prescaler, and the USART3 baud through
+ * RCC_GetClocksFreq(), which reports PCLK1 = 72 MHz).
+ *
+ * Do NOT enable SYSCLK_FREQ_144MHz_HSE instead: that recipe is HSE * 18, which
+ * with this 24 MHz crystal would ask the PLL for 432 MHz.
+ */
 #define SYSCLK_FREQ_48MHz_HSE  48000000
 //#define SYSCLK_FREQ_56MHz_HSE  56000000
 //#define SYSCLK_FREQ_72MHz_HSE  72000000
