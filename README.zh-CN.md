@@ -138,6 +138,9 @@ cmake --build --preset ch32v30x_ob-release
 - [`docs/gdb-reply-path.zh-CN.md`](docs/gdb-reply-path.zh-CN.md) —— CH32V30x USBHS 的
   IN 传输问题（GDB 长回复卡住的根因）、把每条回复限制在单个 USB 包内的回复长度上限
   （`GDB_PACKET_BUFFER_SIZE = 496`），以及残留风险。
+- [`docs/jtag-clock-duty-cycle.zh-CN.md`](docs/jtag-clock-duty-cycle.zh-CN.md) —— 测得
+  约 86% 占空比的那部分 JTAG 时钟来自哪里（每次 bulk 移位的尾部位，以及单时钟路径），
+  以及移位循环是怎样配平到 50% 的。
 
 ## 说明
 

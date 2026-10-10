@@ -30,8 +30,17 @@
  *   fixed cost per clock, in instructions (GPIO accesses in brackets)
  *     swdptap_seq_out          8   [TCK+SWDIO, TCK]
  *     swdptap_seq_in           9   [INDR read, TCK, TCK]
- *     jtagtap_tdi_tdo_seq   13-14  [TCK+TMS+TDI, TCK, INDR read; +1 for TDI=0]
+ *     jtagtap_tdi_tdo_seq     16   [TCK+TMS+TDI, TCK, INDR read]
+ *     jtagtap_tdi_seq         12   [TCK+TMS+TDI, TCK]
  *   delay-loop body           3   [JTAG bnez / addi / j; SWD 2, addi / bnez]
+ *
+ * The JTAG figures went up from 13-14 to 16 when the shift loops were
+ * rearranged for a 50% duty cycle: the per-bit work is now split evenly across
+ * the rising edge instead of sitting on one side of it (see jtagtap.c), and a
+ * couple of nops trim the last cycle of difference.  The old loops were not
+ * really faster: the branch that picked the TDI level mispredicted on roughly
+ * half the bits.  What did change is the shape of the clock: TCK used to be low
+ * for about 1 cycle out of 14, it is now low for 8 out of 16.
  *
  * TCK, TMS and TDI all live on GPIOB and are driven through a single BSHR store
  * per edge (see jtag_port.h), so a JTAG scan needs two writes and one read per
@@ -46,7 +55,7 @@
  * cycles, one delay loop per clock edge.  Measure with a scope before trusting
  * the exact frequency.
  */
-#define USED_SWD_CYCLES 14U /* fixed instructions per clock (JTAG bulk shift)  */
+#define USED_SWD_CYCLES 16U /* fixed instructions per clock (JTAG bulk shift)  */
 #define CYCLES_PER_CNT  3U  /* cycles per delay-loop iteration                 */
 
 uint32_t target_clk_divider = UINT32_MAX;

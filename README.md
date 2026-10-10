@@ -159,6 +159,9 @@ This README is the engineering overview only; the reasoning lives in the notes:
   transfer problem behind the long GDB reply stalls, the reply-size limit that
   keeps every reply inside one USB packet (`GDB_PACKET_BUFFER_SIZE = 496`), and the
   residual risks.
+- [`docs/jtag-clock-duty-cycle.md`](docs/jtag-clock-duty-cycle.md) - why the JTAG
+  clocks that measured ~86% duty cycle did so (the tail bits of every bulk shift,
+  and the single-clock paths), and how the shift loops are arranged for 50%.
 
 ## Notes
 
