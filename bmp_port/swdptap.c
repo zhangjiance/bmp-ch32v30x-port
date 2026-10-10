@@ -75,12 +75,10 @@ static void swdptap_turnaround(const swdio_status_t dir)
 	if (dir == SWDIO_STATUS_FLOAT) {
 		PIN_TMS_SWDIO_SET_IN();
 	}
-	for (volatile uint32_t counter = target_clk_divider + 1; counter > 0; --counter)
-		continue;
+	PIN_CLK_DELAY_ITERS(target_clk_divider + 1U);
 
 	PIN_SWCLK_TCK_SET();
-	for (volatile uint32_t counter = target_clk_divider + 1; counter > 0; --counter)
-		continue;
+	PIN_CLK_DELAY_ITERS(target_clk_divider + 1U);
 
 	PIN_SWCLK_TCK_CLR();
 	if (dir == SWDIO_STATUS_DRIVE) {
@@ -101,12 +99,10 @@ static uint32_t swdptap_seq_in_clk_delay(const size_t clock_cycles)
 	 * to a faster down-count that uses SUBS followed by BCS/BCC.
 	 */
 	for (size_t cycle = clock_cycles; cycle--;) {
-		for (volatile uint32_t counter = target_clk_divider; counter > 0; --counter)
-			continue;
+		PIN_CLK_DELAY();
 		const bool bit = !!PIN_TMS_SWDIO_IN();
 		PIN_SWCLK_TCK_SET();
-		for (volatile uint32_t counter = target_clk_divider; counter > 0; --counter)
-			continue;
+		PIN_CLK_DELAY();
 		value >>= 1U;
 		value |= (uint32_t)bit << 31U;
 		/* Reordering barrier */
@@ -153,14 +149,12 @@ static uint32_t swdptap_seq_in(size_t clock_cycles)
 static bool swdptap_seq_in_parity(uint32_t *ret, size_t clock_cycles)
 {
 	const uint32_t result = swdptap_seq_in(clock_cycles);
-	for (volatile uint32_t counter = target_clk_divider + 1; counter > 0; --counter)
-		continue;
+	PIN_CLK_DELAY_ITERS(target_clk_divider + 1U);
 
 	const uint32_t bit = PIN_TMS_SWDIO_IN();
 
 	PIN_SWCLK_TCK_SET();
-	for (volatile uint32_t counter = target_clk_divider + 1; counter > 0; --counter)
-		continue;
+	PIN_CLK_DELAY_ITERS(target_clk_divider + 1U);
 
 	PIN_SWCLK_TCK_CLR();
 	/* Terminate the read cycle now */
@@ -187,11 +181,9 @@ static void swdptap_seq_out_clk_delay(const uint32_t tms_states, const size_t cl
 	for (size_t cycle = clock_cycles; cycle--;) {
 		/* Reordering barrier */
 		PIN_TMS_SWDIO_OUT(bit);
-		for (volatile uint32_t counter = target_clk_divider; counter > 0; --counter)
-			continue;
+		PIN_CLK_DELAY();
 		PIN_SWCLK_TCK_SET();
-		for (volatile uint32_t counter = target_clk_divider; counter > 0; --counter)
-			continue;
+		PIN_CLK_DELAY();
 		value >>= 1U;
 		bit = value & 1U;
 		/* Reordering barrier */
@@ -213,9 +205,8 @@ static void swdptap_seq_out_no_delay(const uint32_t tms_states, const size_t clo
 	 * to a faster down-count that uses SUBS followed by BCS/BCC.
 	 */
 	for (size_t cycle = clock_cycles; cycle--;) {
-		/* Reordering barrier */
-		PIN_SWCLK_TCK_CLR();
-		PIN_TMS_SWDIO_OUT(bit);
+		/* One store drives the falling clock edge and the data bit. */
+		PIN_SWD_SHIFT_LOW(bit);
 		PIN_SWCLK_TCK_SET();
 		value >>= 1U;
 		bit = value & 1U;
@@ -237,10 +228,8 @@ static void swdptap_seq_out_parity(const uint32_t tms_states, const size_t clock
 	const bool parity = calculate_odd_parity(tms_states);
 	swdptap_seq_out(tms_states, clock_cycles);
 	PIN_TMS_SWDIO_OUT(parity);
-	for (volatile uint32_t counter = target_clk_divider + 1; counter > 0; --counter)
-		continue;
+	PIN_CLK_DELAY_ITERS(target_clk_divider + 1U);
 	PIN_SWCLK_TCK_SET();
-	for (volatile uint32_t counter = target_clk_divider + 1; counter > 0; --counter)
-		continue;
+	PIN_CLK_DELAY_ITERS(target_clk_divider + 1U);
 	PIN_SWCLK_TCK_CLR();
 }

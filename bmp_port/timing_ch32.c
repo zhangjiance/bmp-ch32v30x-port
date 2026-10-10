@@ -21,15 +21,33 @@
  * default here: with no monitor frequency command the probe runs the target
  * link as fast as the loop can toggle the pins.
  *
- * The two constants below come from disassembling those loops for the QingKe
- * RV32 core at 144 MHz: a clock costs USED_SWD_CYCLES instructions of fixed
- * overhead, plus two delay loops of CYCLES_PER_CNT cycles per iteration in the
- * delayed variant (the loop body re-reads the volatile counter, so it is not a
- * single-cycle per iteration).  Measure with a scope before trusting the exact
- * frequency.
+ * The two constants below are counted from the release disassembly of those
+ * loops for the QingKe RV32 core at 144 MHz (one instruction per cycle; the
+ * measured no-delay TCK rate confirms it).  Each figure is one clock's whole
+ * loop body with the loop-closing branch included, so it is directly
+ * comparable with the per-iteration delay-loop cost:
+ *
+ *   fixed cost per clock, in instructions (GPIO accesses in brackets)
+ *     swdptap_seq_out          8   [TCK+SWDIO, TCK]
+ *     swdptap_seq_in           9   [INDR read, TCK, TCK]
+ *     jtagtap_tdi_tdo_seq   13-14  [TCK+TMS+TDI, TCK, INDR read; +1 for TDI=0]
+ *   delay-loop body           3   [JTAG bnez / addi / j; SWD 2, addi / bnez]
+ *
+ * TCK, TMS and TDI all live on GPIOB and are driven through a single BSHR store
+ * per edge (see jtag_port.h), so a JTAG scan needs two writes and one read per
+ * clock instead of the five GPIO accesses the per-pin helpers cost.
+ *
+ * USED_SWD_CYCLES carries the JTAG bulk-shift figure: that is the loop a scan
+ * actually spends its time in, so it is the worst case, and SWD's leaner loop
+ * then comes out faster than the model predicts.  A clock costs
+ *
+ *     USED_SWD_CYCLES + 2 * CYCLES_PER_CNT * target_clk_divider
+ *
+ * cycles, one delay loop per clock edge.  Measure with a scope before trusting
+ * the exact frequency.
  */
-#define USED_SWD_CYCLES 12U /* fixed instructions per SWD/JTAG clock           */
-#define CYCLES_PER_CNT  6U  /* cycles per delay-loop iteration (volatile r/w)  */
+#define USED_SWD_CYCLES 14U /* fixed instructions per clock (JTAG bulk shift)  */
+#define CYCLES_PER_CNT  3U  /* cycles per delay-loop iteration                 */
 
 uint32_t target_clk_divider = UINT32_MAX;
 

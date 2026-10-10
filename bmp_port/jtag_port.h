@@ -15,6 +15,16 @@
  * The status LED (PA5) and BOOT button (PA6) are board pins: they are BOARD_*
  * macros in boards/ch32v30x_ob/board_config.h and are reached through the
  * board primitives board_led_write() / board_read_boot_pin().
+ *
+ * Ordering: no barrier is needed around the pin accesses.  They all go through
+ * __IO (volatile) registers of the WCH GPIO struct, so the compiler may neither
+ * reorder nor elide them.  A barrier only stopped it from keeping the port
+ * address in a register, which cost several instructions per clock.
+ *
+ * TCK, TMS and TDI share GPIOB, and BSHR sets the pins named in its low half
+ * while clearing the ones named in its high half.  The combined helpers below
+ * exploit that: one store lowers TCK, holds TMS low and presents TDI together,
+ * turning three APB accesses per clock into one.
  */
 #ifndef __JTAG_PORT_H__
 #define __JTAG_PORT_H__
@@ -49,31 +59,21 @@ void jtag_port_init(void);
 #define PIN_TDO_GPIO_PORT GPIOB
 #define PIN_TDO_GPIO_PIN  GPIO_Pin_12
 
-/* Compiler barrier, keeps the GPIO accesses in program order. */
-#define PIN_BARRIER() __asm__ volatile("" ::: "memory")
-
 /* ---------------- TCK / SWCLK ---------------- */
 __STATIC_FORCEINLINE void PIN_SWCLK_TCK_SET(void)
 {
     PIN_TCK_GPIO_PORT->BSHR = PIN_TCK_GPIO_PIN;
-    PIN_BARRIER();
 }
 
 __STATIC_FORCEINLINE void PIN_SWCLK_TCK_CLR(void)
 {
     PIN_TCK_GPIO_PORT->BCR = PIN_TCK_GPIO_PIN;
-    PIN_BARRIER();
 }
 
-/* ---------------- TMS / SWDIO ----------------
- * SWDIO is driven open-drain: writing 1 releases the line so the target can
- * drive it, which means switching direction needs no GPIO mode change.
- */
+/* ---------------- TMS / SWDIO ---------------- */
 __STATIC_FORCEINLINE uint32_t PIN_TMS_SWDIO_IN(void)
 {
-    uint32_t sta = (PIN_TMS_GPIO_PORT->INDR & PIN_TMS_GPIO_PIN) ? 1U : 0U;
-    PIN_BARRIER();
-    return sta;
+    return (PIN_TMS_GPIO_PORT->INDR & PIN_TMS_GPIO_PIN) ? 1U : 0U;
 }
 
 __STATIC_FORCEINLINE void PIN_TMS_SWDIO_OUT(uint32_t bit)
@@ -83,7 +83,6 @@ __STATIC_FORCEINLINE void PIN_TMS_SWDIO_OUT(uint32_t bit)
     } else {
         PIN_TMS_GPIO_PORT->BCR = PIN_TMS_GPIO_PIN;
     }
-    PIN_BARRIER();
 }
 
 /*
@@ -100,7 +99,6 @@ __STATIC_FORCEINLINE void PIN_TMS_SWDIO_SET_OUT(void)
     gpio.GPIO_Speed = GPIO_Speed_50MHz;
     gpio.GPIO_Mode = GPIO_Mode_Out_PP;
     GPIO_Init(PIN_TMS_GPIO_PORT, &gpio);
-    PIN_BARRIER();
 }
 
 __STATIC_FORCEINLINE void PIN_TMS_SWDIO_SET_IN(void)
@@ -110,15 +108,12 @@ __STATIC_FORCEINLINE void PIN_TMS_SWDIO_SET_IN(void)
     gpio.GPIO_Speed = GPIO_Speed_50MHz;
     gpio.GPIO_Mode = GPIO_Mode_IPU;
     GPIO_Init(PIN_TMS_GPIO_PORT, &gpio);
-    PIN_BARRIER();
 }
 
 /* ---------------- TDI ---------------- */
 __STATIC_FORCEINLINE uint32_t PIN_TDI_IN(void)
 {
-    uint32_t sta = (PIN_TDI_GPIO_PORT->INDR & PIN_TDI_GPIO_PIN) ? 1U : 0U;
-    PIN_BARRIER();
-    return sta;
+    return (PIN_TDI_GPIO_PORT->INDR & PIN_TDI_GPIO_PIN) ? 1U : 0U;
 }
 
 __STATIC_FORCEINLINE void PIN_TDI_OUT(uint32_t bit)
@@ -128,16 +123,75 @@ __STATIC_FORCEINLINE void PIN_TDI_OUT(uint32_t bit)
     } else {
         PIN_TDI_GPIO_PORT->BCR = PIN_TDI_GPIO_PIN;
     }
-    PIN_BARRIER();
 }
 
 /* ---------------- TDO ---------------- */
 __STATIC_FORCEINLINE uint32_t PIN_TDO_IN(void)
 {
-    uint32_t sta = (PIN_TDO_GPIO_PORT->INDR & PIN_TDO_GPIO_PIN) ? 1U : 0U;
-    PIN_BARRIER();
-    return sta;
+    return (PIN_TDO_GPIO_PORT->INDR & PIN_TDO_GPIO_PIN) ? 1U : 0U;
 }
+
+/* ---------------- combined clock edges ----------------
+ * One store per JTAG clock edge: the falling edge lower TCK, hold TMS low and
+ * present TDI; the rising edge only drives TCK.
+ */
+__STATIC_FORCEINLINE void PIN_JTAG_SHIFT_LOW(const uint32_t tdi_bit)
+{
+    /* BSHR: low half sets, high half clears. */
+    const uint32_t tck_tms_low = ((uint32_t)PIN_TCK_GPIO_PIN | (uint32_t)PIN_TMS_GPIO_PIN) << 16U;
+    if (tdi_bit) {
+        PIN_TCK_GPIO_PORT->BSHR = tck_tms_low | (uint32_t)PIN_TDI_GPIO_PIN;
+    } else {
+        PIN_TCK_GPIO_PORT->BSHR = tck_tms_low | ((uint32_t)PIN_TDI_GPIO_PIN << 16U);
+    }
+}
+
+/* Same, but for the one clock that drives TMS to tms_bit. */
+__STATIC_FORCEINLINE void PIN_JTAG_SHIFT_LOW_TMS(const uint32_t tdi_bit, const uint32_t tms_bit)
+{
+    uint32_t value = (uint32_t)PIN_TCK_GPIO_PIN << 16U;
+    if (tdi_bit) {
+        value |= (uint32_t)PIN_TDI_GPIO_PIN;
+    } else {
+        value |= (uint32_t)PIN_TDI_GPIO_PIN << 16U;
+    }
+    if (tms_bit) {
+        value |= (uint32_t)PIN_TMS_GPIO_PIN;
+    } else {
+        value |= (uint32_t)PIN_TMS_GPIO_PIN << 16U;
+    }
+    PIN_TCK_GPIO_PORT->BSHR = value;
+}
+
+__STATIC_FORCEINLINE void PIN_JTAG_CLK_HIGH(void)
+{
+    PIN_TCK_GPIO_PORT->BSHR = PIN_TCK_GPIO_PIN;
+}
+
+/* SWD: the falling edge and the data bit go out in a single store too. */
+__STATIC_FORCEINLINE void PIN_SWD_SHIFT_LOW(const uint32_t bit)
+{
+    if (bit) {
+        PIN_TCK_GPIO_PORT->BSHR = ((uint32_t)PIN_TCK_GPIO_PIN << 16U) | (uint32_t)PIN_TMS_GPIO_PIN;
+    } else {
+        PIN_TCK_GPIO_PORT->BSHR = ((uint32_t)PIN_TCK_GPIO_PIN | (uint32_t)PIN_TMS_GPIO_PIN) << 16U;
+    }
+}
+
+/* ---------------- bit-clock delay ----------------
+ * One delay edge, `iteration` iterations of target_clk_divider.  A plain
+ * counter plus an empty compiler barrier is used instead of a volatile
+ * counter: the volatile form made the loop spill and reload the counter every
+ * iteration (6 cycles) where this one costs 2-3.
+ */
+#define PIN_CLK_DELAY_ITERS(iterations) \
+    do { \
+        for (uint32_t pin_clk_delay_counter_ = (iterations); pin_clk_delay_counter_ > 0U; \
+             --pin_clk_delay_counter_) \
+            __asm__ volatile("" ::: "memory"); \
+    } while (0)
+
+#define PIN_CLK_DELAY() PIN_CLK_DELAY_ITERS(target_clk_divider)
 
 /* ---------------- nTRST / nRESET (not wired on this board) ---------------- */
 __STATIC_FORCEINLINE uint32_t PIN_nTRST_IN(void)

@@ -100,12 +100,10 @@ static void jtagtap_reset(void)
 static bool jtagtap_next_clk_delay()
 {
 	PIN_SWCLK_TCK_SET();
-	for (volatile uint32_t counter = target_clk_divider; counter > 0; --counter)
-		continue;
+	PIN_CLK_DELAY();
 	const uint16_t result = (uint16_t)PIN_TDO_IN();
 	PIN_SWCLK_TCK_CLR();;
-	for (volatile uint32_t counter = target_clk_divider; counter > 0; --counter)
-		continue;
+	PIN_CLK_DELAY();
 	return result != 0;
 }
 
@@ -133,12 +131,10 @@ static void jtagtap_tms_seq_clk_delay(uint32_t tms_states, const size_t clock_cy
 		const bool state = tms_states & 1U;
 		PIN_TMS_SWDIO_OUT(state);
 		PIN_SWCLK_TCK_SET();
-		for (volatile uint32_t counter = target_clk_divider; counter > 0; --counter)
-			continue;
+		PIN_CLK_DELAY();
 		tms_states >>= 1U;
 		PIN_SWCLK_TCK_CLR();
-		for (volatile uint32_t counter = target_clk_divider; counter > 0; --counter)
-			continue;
+		PIN_CLK_DELAY();
 	}
 }
 
@@ -167,71 +163,102 @@ static void jtagtap_tms_seq(const uint32_t tms_states, const size_t clock_cycles
 static void jtagtap_tdi_tdo_seq_clk_delay(
 	const uint8_t *const data_in, uint8_t *const data_out, const bool final_tms, const size_t clock_cycles)
 {
+	if (!clock_cycles)
+		return;
+
+	/*
+	 * The last bit is the only clock whose TMS level is not known up front, so
+	 * it is peeled out of the loops: everything before it runs with TMS low,
+	 * which lets the falling clock edge carry TDI in a single GPIO store.
+	 */
+	const size_t final_byte = (clock_cycles - 1U) >> 3U;
+	const size_t tail_bits = (clock_cycles - 1U) - (final_byte << 3U);
 	uint8_t value = 0;
-	for (size_t cycle = 0; cycle < clock_cycles; ++cycle) {
-		/* Calculate the next bit and byte to consume data from */
-		const uint8_t bit = cycle & 7U;
-		const size_t byte = cycle >> 3U;
-		/* On the last cycle, assert final_tms to TMS_PIN */
-		PIN_TMS_SWDIO_OUT(cycle + 1U >= clock_cycles && final_tms);
-		/* Set up the TDI pin and start the clock cycle */
-		PIN_TDI_OUT(data_in[byte] & (1U << bit));
-		/* Start the clock cycle */
-		PIN_SWCLK_TCK_SET();
-		for (volatile uint32_t counter = target_clk_divider; counter > 0; --counter)
-			continue;
-		/* If TDO is high, store a 1 in the appropriate position in the value being accumulated */
-		if (PIN_TDO_IN())
-			value |= 1U << bit;
-		if (bit == 7U) {
-			data_out[byte] = value;
-			value = 0;
+
+	/* Complete bytes. */
+	for (size_t byte = 0; byte < final_byte; ++byte) {
+		const uint8_t in = data_in[byte];
+		uint8_t out = 0;
+		for (size_t bit = 0; bit < 8U; ++bit) {
+			PIN_JTAG_SHIFT_LOW((in >> bit) & 1U);
+			PIN_CLK_DELAY();
+			PIN_JTAG_CLK_HIGH();
+			PIN_CLK_DELAY();
+			if (PIN_TDO_IN())
+				out |= (uint8_t)(1U << bit);
 		}
-		/* Finish the clock cycle */
-		PIN_SWCLK_TCK_CLR();
-		for (volatile uint32_t counter = target_clk_divider; counter > 0; --counter)
-			continue;
+		data_out[byte] = out;
 	}
-	/* If clock_cycles is not divisible by 8, we have some extra data to write back here. */
-	if (clock_cycles & 7U) {
-		const size_t byte = (clock_cycles - 1U) >> 3U;
-		data_out[byte] = value;
+
+	/* Bits of the final byte, then the one that carries final_tms. */
+	const uint8_t last = data_in[final_byte];
+	for (size_t bit = 0; bit < tail_bits; ++bit) {
+		PIN_JTAG_SHIFT_LOW((last >> bit) & 1U);
+		PIN_CLK_DELAY();
+		PIN_JTAG_CLK_HIGH();
+		PIN_CLK_DELAY();
+		if (PIN_TDO_IN())
+			value |= (uint8_t)(1U << bit);
 	}
+	PIN_JTAG_SHIFT_LOW_TMS((last >> tail_bits) & 1U, final_tms ? 1U : 0U);
+	PIN_CLK_DELAY();
+	PIN_JTAG_CLK_HIGH();
+	PIN_CLK_DELAY();
+	if (PIN_TDO_IN())
+		value |= (uint8_t)(1U << tail_bits);
+
+	data_out[final_byte] = value;
+	PIN_SWCLK_TCK_CLR();
 }
 
 static void jtagtap_tdi_tdo_seq_no_delay(
 	const uint8_t *const data_in, uint8_t *const data_out, const bool final_tms, const size_t clock_cycles)
 {
+	if (!clock_cycles)
+		return;
+
+	/*
+	 * Only the last clock can carry final_tms, so it is peeled out of the
+	 * loops.  Everything before it runs with TMS low: the falling clock edge
+	 * then carries TDI in the same GPIO store, the rising edge is one store,
+	 * and the loop needs no bit/byte arithmetic beyond a rotating mask.
+	 */
+	const size_t final_byte = (clock_cycles - 1U) >> 3U;
+	const size_t tail_bits = (clock_cycles - 1U) - (final_byte << 3U);
 	uint8_t value = 0;
-	for (size_t cycle = 0; cycle < clock_cycles;) {
-		/* Calculate the next bit and byte to consume data from */
-		const uint8_t bit = cycle & 7U;
-		const size_t byte = cycle >> 3U;
-		const bool tms = cycle + 1U >= clock_cycles && final_tms;
-		const bool tdi = data_in[byte] & (1U << bit);
-		PIN_SWCLK_TCK_CLR();
-		/* Configure the bus for the next cycle */
-		PIN_TDI_OUT(tdi);
-		PIN_TMS_SWDIO_OUT(tms);
-		/* Block the compiler from re-ordering the calculations to preserve timings */
-		/* Increment the cycle counter */
-		++cycle;
-		PIN_SWCLK_TCK_SET();
-		/* If TDO is high, store a 1 in the appropriate position in the value being accumulated */
-		if (PIN_TDO_IN()) /* XXX: Try to remove the need for the if here */
-			value |= 1U << bit;
-		/* If we've got the next whole byte, store the accumulated value and reset state */
-		if (bit == 7U) {
-			data_out[byte] = value;
-			value = 0;
-		}
-		/* Finish the clock cycle */
+
+	/* Complete bytes. */
+	for (size_t byte = 0; byte < final_byte; ++byte) {
+		uint8_t in = data_in[byte];
+		uint8_t out = 0;
+		uint32_t mask = 1U;
+		do {
+			PIN_JTAG_SHIFT_LOW(in & 1U);
+			PIN_JTAG_CLK_HIGH();
+			if (PIN_TDO_IN())
+				out |= (uint8_t)mask;
+			in >>= 1U;
+			mask <<= 1U;
+		} while (mask <= 0x80U);
+		data_out[byte] = out;
 	}
-	/* If clock_cycles is not divisible by 8, we have some extra data to write back here. */
-	if (clock_cycles & 7U) {
-		const size_t byte = (clock_cycles - 1U) >> 3U;
-		data_out[byte] = value;
+
+	/* Bits of the final byte, then the one that carries final_tms. */
+	const uint8_t last = data_in[final_byte];
+	uint8_t mask = 1U;
+	for (size_t bit = 0; bit < tail_bits; ++bit) {
+		PIN_JTAG_SHIFT_LOW((last >> bit) & 1U);
+		PIN_JTAG_CLK_HIGH();
+		if (PIN_TDO_IN())
+			value |= mask;
+		mask = (uint8_t)(mask << 1U);
 	}
+	PIN_JTAG_SHIFT_LOW_TMS((last >> tail_bits) & 1U, final_tms ? 1U : 0U);
+	PIN_JTAG_CLK_HIGH();
+	if (PIN_TDO_IN())
+		value |= mask;
+
+	data_out[final_byte] = value;
 	PIN_SWCLK_TCK_CLR();
 }
 
@@ -248,44 +275,66 @@ static void jtagtap_tdi_tdo_seq(
 
 static void jtagtap_tdi_seq_clk_delay(const uint8_t *const data_in, const bool final_tms, size_t clock_cycles)
 {
-	for (size_t cycle = 0; cycle < clock_cycles; ++cycle) {
-		const uint8_t bit = cycle & 7U;
-		const size_t byte = cycle >> 3U;
-		/* On the last tick, assert final_tms to TMS_PIN */
-		PIN_TMS_SWDIO_OUT(cycle + 1U >= clock_cycles && final_tms);
-		/* Set up the TDI pin and start the clock cycle */
-		PIN_TDI_OUT(data_in[byte] & (1U << bit));
-		PIN_SWCLK_TCK_SET();
-		for (volatile uint32_t counter = target_clk_divider; counter > 0; --counter)
-			continue;
-		/* Finish the clock cycle */
-		PIN_SWCLK_TCK_CLR();
-		for (volatile uint32_t counter = target_clk_divider; counter > 0; --counter)
-			continue;
+	if (!clock_cycles)
+		return;
+
+	const size_t final_byte = (clock_cycles - 1U) >> 3U;
+	const size_t tail_bits = (clock_cycles - 1U) - (final_byte << 3U);
+
+	/* Complete bytes, TMS low throughout. */
+	for (size_t byte = 0; byte < final_byte; ++byte) {
+		const uint8_t in = data_in[byte];
+		for (size_t bit = 0; bit < 8U; ++bit) {
+			PIN_JTAG_SHIFT_LOW((in >> bit) & 1U);
+			PIN_CLK_DELAY();
+			PIN_JTAG_CLK_HIGH();
+			PIN_CLK_DELAY();
+		}
 	}
+
+	/* Bits of the final byte, then the one that carries final_tms. */
+	const uint8_t last = data_in[final_byte];
+	for (size_t bit = 0; bit < tail_bits; ++bit) {
+		PIN_JTAG_SHIFT_LOW((last >> bit) & 1U);
+		PIN_CLK_DELAY();
+		PIN_JTAG_CLK_HIGH();
+		PIN_CLK_DELAY();
+	}
+	PIN_JTAG_SHIFT_LOW_TMS((last >> tail_bits) & 1U, final_tms ? 1U : 0U);
+	PIN_CLK_DELAY();
+	PIN_JTAG_CLK_HIGH();
+	PIN_CLK_DELAY();
+	PIN_SWCLK_TCK_CLR();
 }
 
 static void jtagtap_tdi_seq_no_delay(const uint8_t *const data_in, const bool final_tms, size_t clock_cycles)
 {
-	for (size_t cycle = 0; cycle < clock_cycles;) {
-		const uint8_t bit = cycle & 7U;
-		const size_t byte = cycle >> 3U;
-		const bool tms = cycle + 1U >= clock_cycles && final_tms;
-		const bool tdi = data_in[byte] & (1U << bit);
-		/* Block the compiler from re-ordering the calculations to preserve timings */
-		PIN_SWCLK_TCK_CLR();
-		/* On the last tick, assert final_tms to TMS_PIN */
-		PIN_TMS_SWDIO_OUT(tms);
-		/* Set up the TDI pin and start the clock cycle */
-		PIN_TDI_OUT(tdi);
-		/* Block the compiler from re-ordering the calculations to preserve timings */
-		/* Increment the cycle counter */
-		++cycle;
-		/* Block the compiler from re-ordering the calculations to preserve timings */
-		/* Start the clock cycle */
-		PIN_SWCLK_TCK_SET();
-		/* Finish the clock cycle */
+	if (!clock_cycles)
+		return;
+
+	const size_t final_byte = (clock_cycles - 1U) >> 3U;
+	const size_t tail_bits = (clock_cycles - 1U) - (final_byte << 3U);
+
+	/* Complete bytes, TMS low throughout. */
+	for (size_t byte = 0; byte < final_byte; ++byte) {
+		uint8_t in = data_in[byte];
+		uint32_t mask = 1U;
+		do {
+			PIN_JTAG_SHIFT_LOW(in & 1U);
+			PIN_JTAG_CLK_HIGH();
+			in >>= 1U;
+			mask <<= 1U;
+		} while (mask <= 0x80U);
 	}
+
+	/* Bits of the final byte, then the one that carries final_tms. */
+	const uint8_t last = data_in[final_byte];
+	for (size_t bit = 0; bit < tail_bits; ++bit) {
+		PIN_JTAG_SHIFT_LOW((last >> bit) & 1U);
+		PIN_JTAG_CLK_HIGH();
+	}
+	PIN_JTAG_SHIFT_LOW_TMS((last >> tail_bits) & 1U, final_tms ? 1U : 0U);
+	PIN_JTAG_CLK_HIGH();
 	PIN_SWCLK_TCK_CLR();
 }
 
@@ -302,11 +351,9 @@ static void jtagtap_cycle_clk_delay(const size_t clock_cycles)
 {
 	for (size_t cycle = 0; cycle < clock_cycles; ++cycle) {
 		PIN_SWCLK_TCK_SET();
-		for (volatile uint32_t counter = target_clk_divider; counter > 0; --counter)
-			continue;
+		PIN_CLK_DELAY();
 		PIN_SWCLK_TCK_CLR();
-		for (volatile uint32_t counter = target_clk_divider; counter > 0; --counter)
-			continue;
+		PIN_CLK_DELAY();
 	}
 }
 
