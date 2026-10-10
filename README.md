@@ -122,10 +122,26 @@ Artifacts: `build/ch32v30x_ob-release/bmp-ch32v30x-port.{elf,hex,bin}`.
 
 1. Flash a matching DFU bootloader first (it owns its own 32 KB region at
    `0x08000000`).
-2. Hold BOOT while powering up to enter DFU mode, then write this application:
+2. Write this application. Because it exposes a **DFU runtime interface** (interface 4),
+   the **same single command works in both states** - you never have to find out which
+   firmware the device is running first:
+
    ```sh
    dfu-util -d 1a86 -s 0x08008000:leave -D build/ch32v30x_ob-release/bmp-ch32v30x-port.bin
    ```
+
+   - **Device already in the bootloader's DFU mode** (entered by holding BOOT while
+     powering up) - plain download.
+   - **Device running this application** (`1a86:6018`) - `dfu-util` sends DFU_DETACH
+     before the download; the runtime interface hands it to `platform_request_boot()`,
+     which writes the BKP hand-shake and resets, so the bootloader comes up in DFU mode
+     and the command flashes the image.
+   - `-d 1a86` matches by VID only (`dfu-util` also matches DFU-mode devices when only
+     run-time IDs are given), which covers the application (`1a86:6018`) and the
+     bootloader (`1a86:df11`) alike, so the switch of mode does not lose the device.
+   - To only send a running application back to the bootloader without flashing, use
+     `dfu-util -e` on its own.
+
 3. Then connect with GDB:
    ```sh
    arm-none-eabi-gdb -ex 'target extended-remote /dev/ttyACM0'   # Linux
@@ -209,6 +225,16 @@ bit-banged path always worked.
     No reply depends on the driver's interrupt continuation any more, and the
     completion callback only clears the busy flag.
   - `GDB_PACKET_BUFFER_SIZE` is back at **2048**.
+  - **Full-size replies end with a ZLP** (`c957249` `fix: terminate full-size GDB replies
+    with a ZLP`): a bulk transfer is only terminated by a **short packet**, and
+    `usbd_ep_start_write()` never appends a zero-length packet by itself. A reply whose
+    length is an exact multiple of `USB_XFER_SIZE` (512 bytes) therefore ends on a
+    full-size packet, the host assumes more data is coming and the whole reply is only
+    handed up at the **next host packet**. GDB hits this exactly:
+    `qXfer:features:read:target.xml:0,7fb` frames as `$` + `m` + 2043 + `#` + 2 checksum
+    bytes = 2048 = 4 x 512, which is the direct cause of the hang after `attach`. The
+    send path now checks whether the length is a multiple of `USB_XFER_SIZE` and, if so,
+    sends a terminating **zero-length packet** (ZLP) and waits for it to complete.
 - **Client requirement**: a single `m` (hex memory read) must still not exceed
   `GDB_PACKET_BUFFER_SIZE / 2`, now **1024 bytes** (the check is
   `len > GDB_PACKET_BUFFER_SIZE / 2U` in
@@ -218,6 +244,27 @@ bit-banged path always worked.
   `PacketSize`. Also watch out for clients that fill the CRC with source data for
   the chunks they could not read back: their checksums then match without anything
   having been verified.
+
+### Why the full-packet problem only shows up on Windows
+
+The very same reply has always been fine on Linux, including a device attached into WSL
+through `usbipd` - because what decides "when is an IN transfer finished" is the **host
+side USB stack**, and Linux and Windows do it differently:
+
+- **Linux**: `cdc_acm` sizes every bulk IN URB buffer to exactly the endpoint's max
+  packet size (`acm->readsize = wMaxPacketSize`, 512 bytes here), so one full-size packet
+  from the device already fills the whole URB, the URB completes immediately and the data
+  is handed to userspace right away - it never needs that zero-length packet. `usbfs` /
+  libusb behave the same as long as you read a fixed number of bytes.
+- **Windows**: `usbser.sys` (COM port) and WinUSB both submit one bulk IN request for a
+  **length of their own choosing** and only consider the transfer finished when that
+  length is filled or a short packet arrives. With a reply that is an exact multiple of
+  512, the tail carries no short packet, the request never completes and the data is only
+  released when a later command supplies a short packet - which is why reading a whole URB
+  at a time (usbser.sys/WinUSB) exposes the bug most reliably.
+- **Why WSL + usbip is fine too**: with usbip the URBs are still created by Linux
+  (`vhci_hcd` + `cdc_acm`, still 512 bytes each) and merely executed on Windows, so the
+  transfer-termination semantics stay Linux's and the problem never appears.
 
 ### Still open
 

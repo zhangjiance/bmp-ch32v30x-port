@@ -107,10 +107,21 @@ cmake --build --preset ch32v30x_ob-release
 ## 烧录 / 使用
 
 1. 先烧配套的 DFU bootloader（它自带 32 KB 区，起始 `0x08000000`）。
-2. 按住 BOOT 上电进入 DFU，烧写本应用：
+2. 烧写本应用。因为本应用自带 **DFU runtime 接口**（接口 4），下面这**同一条命令在两种
+   状态下都可用**，不需要先判断设备当前跑的是哪一份固件：
+
    ```sh
    dfu-util -d 1a86 -s 0x08008000:leave -D build/ch32v30x_ob-release/bmp-ch32v30x-port.bin
    ```
+
+   - **设备已经在 bootloader 的 DFU 模式**（按住 BOOT 上电进入）→ 直接下载。
+   - **设备正在运行本应用**（`1a86:6018`）→ dfu-util 在做下载前会先发 DFU_DETACH，
+     runtime 接口把它交给 `platform_request_boot()`，写 BKP 握手后复位，bootloader 以
+     DFU 模式启动，命令接着把镜像烧进去。因此**不必再按住 BOOT 上电**。
+   - `-d 1a86` 只按 VID 匹配（`dfu-util` 的 run-time ID 也会匹配之后的 DFU 模式设备），
+     正好同时覆盖应用（`1a86:6018`）和 bootloader（`1a86:df11`），切换模式后不会被丢掉。
+   - 只想让正在运行的应用回到 bootloader、不立即烧录时，单独用 `dfu-util -e`。
+
 3. 之后用 GDB 连接：
    ```sh
    arm-none-eabi-gdb -ex 'target extended-remote /dev/ttyACM0'   # Linux
@@ -182,12 +193,36 @@ bitbang 路径上的短回复始终正常。
   - `gdb_in_send()` 把回复切成 `USB_XFER_SIZE`（512 字节）的块，**只在线程上下文**一次
     装一块并等它完成。回复不再依赖驱动的中断续包，完成回调只负责清 busy 标志。
   - `GDB_PACKET_BUFFER_SIZE` 已改回 **2048**。
+  - **满包回复用 ZLP 收尾**（`c957249` `fix: terminate full-size GDB replies with a ZLP`）：
+    bulk 传输只由**短包**终结，而 `usbd_ep_start_write()` 自己不会补零长包；当回复长度恰好是
+    `USB_XFER_SIZE`（512 字节）的整数倍时，传输停在满包上，主机认为后面还有数据，整份回复要拖
+    到**下一条主机命令**才被交上去。GDB 正好踩中：`qXfer:features:read:target.xml:0,7fb` 回
+    复组帧后是 `$` + `m` + 2043 + `#` + 2 字节校验 = 2048 = 4 × 512，就是 attach 后卡住的
+    直接原因。现在发送结束时若长度为 `USB_XFER_SIZE` 的整数倍，就再发一个**零长包**（ZLP）作为
+    终止符并等它完成。
 - **对客户端的要求**：单次 `m`（十六进制读内存）长度仍然不能超过
   `GDB_PACKET_BUFFER_SIZE / 2`，现在是 **1024 字节**（判定在
   `third_party_components/blackmagic/src/gdb_main.c` 的
   `len > GDB_PACKET_BUFFER_SIZE / 2U`），超了直接回 `E02`。真正的 GDB 会按广播的 `PacketSize` 自动分块，自己实现协议的客户端必须尊重它
   或解析 `PacketSize`。另外留意这类工具"读不回就用源数据补齐 CRC"的兜底：那样得到的
   CRC 相等并不代表读回校验通过。
+
+### 为什么"满包没有终止符"只在 Windows 上发作
+
+同一份回复在 Linux 上一向是好的，包括设备用 `usbipd` 挂进 WSL 的用法——因为决定"一次 IN
+传输什么时候算结束"的是**主机侧的 USB 协议栈**，而 Linux 和 Windows 在这一点上的做法不同：
+
+- **Linux**：`cdc_acm` 给 bulk IN 端点准备的每个 URB 缓冲区大小就是端点的最大包长
+  （`acm->readsize = wMaxPacketSize`，本设备 512 字节），所以设备发来的一个满包就填满了整个
+  URB，URB 立刻完成、数据当场交给用户态——它**从来不依赖那个零长包**。`usbfs` / libusb 只要
+  按固定字节数读，效果也一样。
+- **Windows**：`usbser.sys`（COM 口）和 WinUSB 都是按**自己选定的长度**提交一次 bulk IN
+  请求，只有收满这个长度、或收到短包，才认为传输结束。回复长度正好是 512 的整数倍时，结尾没有
+  短包，这次请求永远完不成，数据只能等下一条命令带来一个短包才被放行——所以"按整个 URB 读"的
+  `usbser.sys` / WinUSB 最容易暴露这个问题。
+- **WSL + usbip 为什么也没有事**：走 usbip 时 URBs 仍然由 Linux 侧产生
+  （`vhci_hcd` + `cdc_acm`，还是 512 字节一个），只是被转发到 Windows 上执行，传输的终止语义
+  依旧按 Linux 的来，问题不会出现。
 
 ### 仍未处理
 
