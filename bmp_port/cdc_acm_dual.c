@@ -472,8 +472,38 @@ static void gdb_in_send(void)
         gdb_in_sent += chunk;
     }
 
+    const uint32_t length = gdb_in_len;
     gdb_in_len = 0U;
     gdb_in_sent = 0U;
+
+    /*
+     * A bulk transfer is only terminated by a short packet, and
+     * usbd_ep_start_write() never appends a zero-length packet by itself: a
+     * reply whose length is an exact multiple of the endpoint's max packet size
+     * ends on a full-size packet, so the host keeps waiting for the rest of the
+     * transfer and the whole reply is only handed up at the next read.  GDB
+     * hits this exactly: a qXfer read of 0x7fb bytes is staged as
+     * '$' + 'm' + 2043 + '#' + 2 checksum = 2048 = 4 * USB_XFER_SIZE, and the
+     * missing terminator shows up as the hang after "attach" on Windows
+     * (usbser.sys/WinUSB), which reads a whole URB at a time.  Send the
+     * terminating zero-length packet here.
+     */
+    if ((length == 0U) || ((length % sizeof(gdb_in_xfer)) != 0U)) {
+        return;
+    }
+
+    gdb_usb_enter();
+    const int rc = usbd_ep_start_write(0, GDB_IN_EP, gdb_in_xfer, 0U);
+    gdb_in_busy = (rc == 0);
+    gdb_usb_exit();
+
+    if (rc != 0) {
+        return;
+    }
+
+    while (gdb_in_busy && ((uint32_t)(board_time_ms() - deadline_start) < GDB_IN_XFER_TIMEOUT_MS)) {
+    }
+    gdb_in_busy = false;
 }
 
 static void usbd_cdc_acm_bulk_out_gdb(uint8_t busid, uint8_t ep, uint32_t nbytes)
