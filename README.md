@@ -33,6 +33,7 @@ shared/boot_protocol.h    bootloader/application contract (partition, BKP)
 | TDI | PB13 |
 | TDO | PB12 |
 | Status LED | PA8 |
+| BOOT button (to GND, active low) | PA6 |
 | Target UART TX (USART3) | PB10 |
 | Target UART RX (USART3) | PB11 |
 
@@ -76,10 +77,13 @@ fully deterministic.
 
 - The application links at `0x00008000` (`linkfile/flash_dfu.ld`, 96 KB), matching
   `BOOT_APP_OFFSET` in `shared/boot_protocol.h`.
-- Two paths return to the bootloader, both going through the BKP handshake in
+- Three paths return to the bootloader, all going through the BKP handshake in
   `bmp_port/boot_trigger_ch32v30x.c` (it survives `NVIC_SystemReset()`):
   - `dfu-util -e` (DFU_DETACH) calls `platform_request_boot()`
   - `monitor bootloader` from the GDB side
+  - holding the BOOT button (PA6): the 100 ms TIM3 interrupt in
+    `boards/ch32v30x_bmp/board.c` samples it, so it works while the main loop is
+    parked in `gdb_if_getchar()` waiting for a GDB command
 
 ## Build
 

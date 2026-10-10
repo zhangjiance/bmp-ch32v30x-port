@@ -10,6 +10,7 @@
  *   PB13 -> TDI
  *   PB12 -> TDO
  *   PA8  -> status LED
+ *   PA6  -> BOOT button (to GND, active low)
  */
 #ifndef __JTAG_PORT_H__
 #define __JTAG_PORT_H__
@@ -43,6 +44,11 @@
 
 #define PIN_LED_GPIO_PORT GPIOA
 #define PIN_LED_GPIO_PIN  GPIO_Pin_8
+
+/* BOOT button: PA6 to GND with the internal pull-up, so pressed reads low. */
+#define PIN_BOOT_GPIO_PORT       GPIOA
+#define PIN_BOOT_GPIO_PIN        GPIO_Pin_6
+#define PIN_BOOT_ACTIVE_LOW      1
 
 /* Compiler barrier, keeps the GPIO accesses in program order. */
 #define PIN_BARRIER() __asm__ volatile("" ::: "memory")
@@ -173,6 +179,16 @@ __STATIC_INLINE void LED_RUNNING_OUT(uint32_t bit)
 __STATIC_INLINE uint32_t TIMESTAMP_GET(void)
 {
     return platform_time_ms();
+}
+
+/* ---------------- BOOT button ----------------
+ * Sampled by the 100 ms TIM3 interrupt in board.c while the main loop is parked
+ * in gdb_if_getchar() waiting for a GDB command. */
+__STATIC_INLINE uint32_t PIN_BOOT_PRESSED(void)
+{
+    uint32_t sta = (PIN_BOOT_GPIO_PORT->INDR & PIN_BOOT_GPIO_PIN) ? 1U : 0U;
+    PIN_BARRIER();
+    return PIN_BOOT_ACTIVE_LOW ? (sta == 0U) : (sta != 0U);
 }
 
 #endif /* __JTAG_PORT_H__ */

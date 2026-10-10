@@ -3,9 +3,25 @@
 #include "debug.h"
 #include "system_ch32v30x.h"
 #include "jtag_port.h"
+#include "boot_trigger_port.h"
 
 /* clock frequency the SysTick counter runs at (Hz), set in board_init() */
 static uint32_t systick_clock;
+
+/*
+ * BOOT button watchdog.
+ *
+ * The probe spends its idle time parked inside gdb_if_getchar() waiting for the
+ * next GDB command, so the main loop cannot sample the button like
+ * ch32_hello_world does.  TIM3 therefore raises a 100 ms update interrupt that
+ * samples PA6 and, once the button has read pressed for long enough, writes the
+ * BKP hand-shake and resets into the DFU bootloader.
+ *
+ * SysTick is already used as a free-running time base (see board_init_systick()
+ * below) and must not be given an interrupt, hence the dedicated timer.
+ */
+#define BOOT_BUTTON_TICK_MS     100U  /* TIM3 update period                     */
+#define BOOT_BUTTON_PRESS_TICKS 5U    /* pressed samples => 500 ms before boot  */
 
 uint32_t running_status = 0;
 
@@ -37,6 +53,60 @@ void board_delay_ms(uint32_t ms)
     uint32_t start = board_time_ms();
     while ((uint32_t)(board_time_ms() - start) < ms) {
         continue;
+    }
+}
+
+static void board_init_boot_button(void)
+{
+    GPIO_InitTypeDef gpio = { 0 };
+    TIM_TimeBaseInitTypeDef tim = { 0 };
+
+    /* PA6: input, pull-up when active low (released level = "run the app"). */
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA, ENABLE);
+    gpio.GPIO_Pin   = PIN_BOOT_GPIO_PIN;
+    gpio.GPIO_Mode  = PIN_BOOT_ACTIVE_LOW ? GPIO_Mode_IPU : GPIO_Mode_IPD;
+    gpio.GPIO_Speed = GPIO_Speed_50MHz;
+    GPIO_Init(PIN_BOOT_GPIO_PORT, &gpio);
+
+    /* TIM3: BOOT_BUTTON_TICK_MS update interrupt.  APB1 timer clock is HCLK. */
+    RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM3, ENABLE);
+    tim.TIM_Prescaler     = (uint16_t)((SystemCoreClock / 10000U) - 1U); /* 10 kHz   */
+    tim.TIM_Period        = (uint16_t)((10000U * BOOT_BUTTON_TICK_MS / 1000U) - 1U);
+    tim.TIM_ClockDivision = TIM_CKD_DIV1;
+    tim.TIM_CounterMode   = TIM_CounterMode_Up;
+    TIM_TimeBaseInit(TIM3, &tim);
+
+    TIM_ClearITPendingBit(TIM3, TIM_IT_Update);
+    TIM_ITConfig(TIM3, TIM_IT_Update, ENABLE);
+    /* Default priority, same as the USBHS interrupt: neither preempts the
+     * other, and this ISR is only a GPIO read plus a counter. */
+    NVIC_EnableIRQ(TIM3_IRQn);
+    TIM_Cmd(TIM3, ENABLE);
+}
+
+/*
+ * Samples the BOOT button from the timer interrupt: an ISR is the only place
+ * that still runs while the main loop is blocked on the GDB endpoint.  The ISR
+ * stays minimal (one GPIO read + a counter) so the bit-banged SWD/JTAG timing
+ * only sees a very short, infrequent interruption.
+ */
+void TIM3_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
+void TIM3_IRQHandler(void)
+{
+    static uint32_t pressed;
+
+    if (TIM_GetITStatus(TIM3, TIM_IT_Update) == RESET) {
+        return;
+    }
+    TIM_ClearITPendingBit(TIM3, TIM_IT_Update);
+
+    if (PIN_BOOT_PRESSED()) {
+        if (++pressed >= BOOT_BUTTON_PRESS_TICKS) {
+            /* Writes the BKP hand-shake and resets; never returns. */
+            boot_trigger_reboot_to_boot();
+        }
+    } else {
+        pressed = 0U;
     }
 }
 
@@ -120,6 +190,7 @@ void board_init(void)
     board_init_gpio();
     board_init_usb();
     board_init_systick();
+    board_init_boot_button();
 }
 
 /*
