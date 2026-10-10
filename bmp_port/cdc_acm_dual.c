@@ -60,11 +60,12 @@
 
 /*
  * GDB packet size: limits a reply and is what the stub announces as PacketSize.
- * A reply is no longer limited to one USB packet - gdb_in_send() cuts it into
- * USB_XFER_SIZE chunks and waits for each one.
+ * gdb_in_send() can cut a reply into USB_XFER_SIZE chunks and wait for each
+ * one, but 496 keeps a whole reply (496 + 4 framing = 500 bytes) inside a single
+ * 512 byte packet, so that path is never needed.  See bmp_port/CMakeLists.txt.
  */
 #ifndef GDB_PACKET_BUFFER_SIZE
-#define GDB_PACKET_BUFFER_SIZE 2048U
+#define GDB_PACKET_BUFFER_SIZE 496U
 #endif
 
 /* One escaped maximum size packet plus framing, i.e. the most gdb_if_putchar()

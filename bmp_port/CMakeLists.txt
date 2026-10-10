@@ -185,7 +185,13 @@ target_compile_definitions(${PROJECT_TARGET} PRIVATE
     -DCONFIG_RISCV_ACCEL=1
     # GDB packet size: also the PacketSize announced to GDB, and what bounds a
     # single 'm' read (GDB_PACKET_BUFFER_SIZE / 2 in gdb_main.c).
-    -DGDB_PACKET_BUFFER_SIZE=2048
+    #
+    # 496 is the IN-side workaround: a whole reply is at most 496 + 4 = 500
+    # bytes, so it fits in one 512 byte USB packet and gdb_in_send() never has
+    # to continue a transfer across interrupts (README, "long GDB replies
+    # stalled").  A larger value chunks replies over several packets and makes
+    # every one of them depend on that continuation path.
+    -DGDB_PACKET_BUFFER_SIZE=496
     -DDISABLE_IRQ_PREEMPTIVE=1
 )
 
