@@ -34,7 +34,7 @@ static void board_init_systick(void)
     SysTick->SR = 0;
     SysTick->CNT = 0;
     SysTick->CMP = 0xffffffffffffffffull;
-    SysTick->CTLR |= (1 << 0); /* STE: start counting */
+    SysTick->CTLR |= (1 << 0) | (1 << 2); /* STE | STCLK: count at HCLK */
 }
 
 uint32_t board_time_ms(void)
