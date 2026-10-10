@@ -4,7 +4,7 @@
  * Only these PIN_* / TIMESTAMP_GET macros are platform specific: swdptap.c and
  * jtagtap.c contain the protocol and only call into this header.  The debug
  * pins belong to the probe, so their bring-up is jtag_port_init() (jtag_port.c);
- * the board layer (boards/ch32v30x_bmp/) knows nothing about SWD/JTAG.
+ * the board layer (boards/ch32v30x_ob/) knows nothing about SWD/JTAG.
  *
  * Pin mapping:
  *   PB14 -> SWCLK/TCK
@@ -13,7 +13,7 @@
  *   PB12 -> TDO
  *
  * The status LED (PA5) and BOOT button (PA6) are board pins: they are BOARD_*
- * macros in boards/ch32v30x_bmp/board_config.h and are reached through the
+ * macros in boards/ch32v30x_ob/board_config.h and are reached through the
  * board primitives board_led_write() / board_read_boot_pin().
  */
 #ifndef __JTAG_PORT_H__

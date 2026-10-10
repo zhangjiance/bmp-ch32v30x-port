@@ -17,7 +17,7 @@ third_party_components/
   blackmagic/             子仓：BMP 核心与 target 驱动
   CherryUSB/              子仓：USB 协议栈 + CH32V30x USBHS 端口
 SDK/                      WCH ch32v30x 外设库
-boards/ch32v30x_bmp/      板级 BSP
+boards/ch32v30x_ob/      板级 BSP
 linkfile/flash_dfu.ld     应用链接脚本（0x00008000，96K）
 shared/boot_protocol.h    boot 与 app 的约定（分区、BKP 触发）
 ```
@@ -36,7 +36,7 @@ shared/boot_protocol.h    boot 与 app 的约定（分区、BKP 触发）
 | 目标串口 RX (USART3) | PB11 |
 
 nTRST / nSRST 未接线（空实现）。SWD/JTAG 引脚定义在 `bmp_port/jtag_port.h`；状态 LED 与
-BOOT 按键属于板级引脚（`boards/ch32v30x_bmp/board_config.h` 里的 `BOARD_LED_*` /
+BOOT 按键属于板级引脚（`boards/ch32v30x_ob/board_config.h` 里的 `BOARD_LED_*` /
 `BOARD_BOOT_*`），通过板级原语 `board_led_write()` / `board_read_boot_pin()` 访问。
 
 SWD/JTAG 只做 **GPIO 位操作**（`bmp_port/jtag_port.h` 提供 `PIN_*` 宏），没有 SPI 加速
@@ -69,7 +69,10 @@ SWD/JTAG 只做 **GPIO 位操作**（`bmp_port/jtag_port.h` 提供 `PIN_*` 宏�
 
 ## 目标串口（USB2UART）
 
-第二路 CDC（接口 2/3）对接 USART3（PB10/PB11），整条通路是 **DMA + 中断驱动**，不依赖主循环：
+第二路 CDC（接口 2/3）对接 USART3（PB10/PB11）。串口**硬件由板级描述**而不是端口：实例、引脚
+和时钟是 `boards/ch32v30x_ob/board_config.h` 里的 `BOARD_APP_UART*` 宏，由
+`board_init_app_uart()` 完成初始化；端口只负责线路格式和线上层。
+整条通路是 **DMA + 中断驱动**，不依赖主循环：
 
 - **target → host**：USART3 RX 由 DMA1 通道 3 循环写入 256 字节缓冲；串口**空闲中断**
   与 DMA 半满/全满中断把已到达的数据经 USB sink 直接写进 IN 端点，端点完成回调
@@ -95,18 +98,18 @@ SWD/JTAG 只做 **GPIO 位操作**（`bmp_port/jtag_port.h` 提供 `PIN_*` 宏�
 ## 构建
 
 ```sh
-cmake --preset ch32v30x_bmp-release
-cmake --build --preset ch32v30x_bmp-release
+cmake --preset ch32v30x_ob-release
+cmake --build --preset ch32v30x_ob-release
 ```
 
-产物：`build/ch32v30x_bmp-release/bmp-ch32v30x-port.{elf,hex,bin}`。
+产物：`build/ch32v30x_ob-release/bmp-ch32v30x-port.{elf,hex,bin}`。
 
 ## 烧录 / 使用
 
 1. 先烧配套的 DFU bootloader（它自带 32 KB 区，起始 `0x08000000`）。
 2. 按住 BOOT 上电进入 DFU，烧写本应用：
    ```sh
-   dfu-util -d 1a86 -s 0x08008000:leave -D build/ch32v30x_bmp-release/bmp-ch32v30x-port.bin
+   dfu-util -d 1a86 -s 0x08008000:leave -D build/ch32v30x_ob-release/bmp-ch32v30x-port.bin
    ```
 3. 之后用 GDB 连接：
    ```sh

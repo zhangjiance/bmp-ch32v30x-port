@@ -1,8 +1,8 @@
 /*
- * board.c - board primitives for the CH32V30x Black Magic Probe.
+ * board.c - board primitives.
  *
  * This file is the whole board layer.  It includes the SDK and the board's own
- * headers (board.h, board_config.h) and nothing else: no probe, no application.
+ * headers (board.h, board_config.h) and nothing else: no application, no probe.
  * Every board specific value it needs is a BOARD_* macro from board_config.h.
  *
  * It provides the primitives declared in board.h and owns the one periodic ISR
@@ -24,7 +24,7 @@ static board_tick_cb tick_cb;
  * SysTick is used as a free running 64bit counter, which gives the millisecond
  * time base without needing an interrupt.  Delays are derived from it too, so
  * nothing else may reconfigure SysTick (Delay_Ms()/Delay_Us() from the WCH SDK
- * do, so they are intentionally NOT used here).
+ * do, so they are intentionally NOT used here - call board_delay_ms()).
  */
 static void board_init_systick(void)
 {
@@ -49,17 +49,6 @@ void board_delay_ms(uint32_t ms)
     while ((uint32_t)(board_time_ms() - start) < ms) {
         continue;
     }
-}
-
-/*
- * Optional console.  The WCH newlib printf() spins forever on an uninitialised
- * USART, so this port leaves it off: BOARD_HAS_CONSOLE is simply not defined.
- */
-void board_init_console(void)
-{
-#if defined(BOARD_HAS_CONSOLE) && BOARD_HAS_CONSOLE
-    USART_Printf_Init(BOARD_CONSOLE_BAUDRATE);
-#endif
 }
 
 /* -------------------------------------------------------------------------- */
@@ -142,6 +131,35 @@ bool board_read_boot_pin(void)
 }
 
 /* -------------------------------------------------------------------------- */
+/* Application UART                                                           */
+/* -------------------------------------------------------------------------- */
+void board_init_app_uart(void)
+{
+#if BOARD_HAS_APP_UART
+    GPIO_InitTypeDef gpio = { 0 };
+
+    BOARD_APP_UART_GPIO_CLK_ENABLE();
+    BOARD_APP_UART_CLK_ENABLE();
+
+    /* TX idle high before the alternate function takes over, so the line does
+     * not glitch low (the far end would read that as a start bit). */
+    GPIO_SetBits(BOARD_APP_UART_TX_GPIO, BOARD_APP_UART_TX_PIN);
+    gpio.GPIO_Pin   = BOARD_APP_UART_TX_PIN;
+    gpio.GPIO_Speed = GPIO_Speed_50MHz;
+    gpio.GPIO_Mode  = GPIO_Mode_AF_PP;
+    GPIO_Init(BOARD_APP_UART_TX_GPIO, &gpio);
+
+    gpio.GPIO_Pin  = BOARD_APP_UART_RX_PIN;
+    gpio.GPIO_Mode = GPIO_Mode_IPU;
+    GPIO_Init(BOARD_APP_UART_RX_GPIO, &gpio);
+
+    /* Hardware side only.  The line format is the application's business: it
+     * owns the live one and changes it whenever the far end asks, starting from
+     * the board's BOARD_APP_UART_BAUDRATE. */
+#endif /* BOARD_HAS_APP_UART */
+}
+
+/* -------------------------------------------------------------------------- */
 /* Periodic tick                                                              */
 /* -------------------------------------------------------------------------- */
 void board_timer_create(uint32_t ms, board_tick_cb cb)
@@ -198,6 +216,5 @@ void board_init(void)
     board_init_boot_button();
 #endif
 
-    board_init_console();
     board_init_systick();
 }

@@ -19,7 +19,7 @@ third_party_components/
   blackmagic/             submodule: BMP core and target drivers
   CherryUSB/              submodule: USB stack + CH32V30x USBHS port
 SDK/                      WCH ch32v30x peripheral library
-boards/ch32v30x_bmp/      board BSP
+boards/ch32v30x_ob/      board BSP
 linkfile/flash_dfu.ld     application linker script (0x00008000, 96K)
 shared/boot_protocol.h    bootloader/application contract (partition, BKP)
 ```
@@ -39,7 +39,7 @@ shared/boot_protocol.h    bootloader/application contract (partition, BKP)
 
 nTRST / nSRST are not wired (empty implementations). The SWD/JTAG pin definitions
 live in `bmp_port/jtag_port.h`; the status LED and BOOT button are board pins
-(`BOARD_LED_*` / `BOARD_BOOT_*` in `boards/ch32v30x_bmp/board_config.h`) reached
+(`BOARD_LED_*` / `BOARD_BOOT_*` in `boards/ch32v30x_ob/board_config.h`) reached
 through the board primitives `board_led_write()` / `board_read_boot_pin()`.
 
 SWD/JTAG is **GPIO bit-banging only** (the `PIN_*` macros in
@@ -77,8 +77,12 @@ fully deterministic.
 
 ## Target UART (USB2UART)
 
-The second CDC function (interfaces 2/3) is wired to USART3 (PB10/PB11). The whole
-path is **DMA + interrupt driven** and never depends on the main loop:
+The second CDC function (interfaces 2/3) is wired to USART3 (PB10/PB11). The UART
+*hardware* is described by the board, not the port: instance, pins and clocks are
+the `BOARD_APP_UART*` macros in `boards/ch32v30x_ob/board_config.h`, brought up by
+`board_init_app_uart()`. The port owns the line format and everything above the
+wire. The whole path is **DMA + interrupt driven** and never depends on the main
+loop:
 
 - **target → host**: USART3 RX is written into a 256 byte buffer in a circle by DMA1
   channel 3; the USART **idle interrupt** and the DMA half/full transfer interrupts
@@ -108,11 +112,11 @@ path is **DMA + interrupt driven** and never depends on the main loop:
 ## Build
 
 ```sh
-cmake --preset ch32v30x_bmp-release
-cmake --build --preset ch32v30x_bmp-release
+cmake --preset ch32v30x_ob-release
+cmake --build --preset ch32v30x_ob-release
 ```
 
-Artifacts: `build/ch32v30x_bmp-release/bmp-ch32v30x-port.{elf,hex,bin}`.
+Artifacts: `build/ch32v30x_ob-release/bmp-ch32v30x-port.{elf,hex,bin}`.
 
 ## Flashing / usage
 
@@ -120,7 +124,7 @@ Artifacts: `build/ch32v30x_bmp-release/bmp-ch32v30x-port.{elf,hex,bin}`.
    `0x08000000`).
 2. Hold BOOT while powering up to enter DFU mode, then write this application:
    ```sh
-   dfu-util -d 1a86 -s 0x08008000:leave -D build/ch32v30x_bmp-release/bmp-ch32v30x-port.bin
+   dfu-util -d 1a86 -s 0x08008000:leave -D build/ch32v30x_ob-release/bmp-ch32v30x-port.bin
    ```
 3. Then connect with GDB:
    ```sh

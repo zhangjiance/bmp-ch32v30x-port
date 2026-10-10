@@ -3,7 +3,7 @@
  *
  * The pin macros and the bit accessors live in jtag_port.h; only the one-time
  * GPIO configuration needs code, and it belongs to the probe (the board layer,
- * boards/ch32v30x_bmp/, knows nothing about SWD/JTAG).
+ * boards/ch32v30x_ob/, knows nothing about SWD/JTAG).
  */
 #include "jtag_port.h"
 

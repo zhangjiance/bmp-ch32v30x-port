@@ -25,33 +25,33 @@
             }
         },
         {
-            "name": "ch32v30x_bmp-release",
+            "name": "ch32v30x_ob-release",
             "displayName": "CH32V30x BMP (Release)",
             "inherits": "base",
             "cacheVariables": {
-                "BOARD": "ch32v30x_bmp"
+                "BOARD": "ch32v30x_ob"
             },
-            "binaryDir": "${sourceDir}/build/ch32v30x_bmp-release"
+            "binaryDir": "${sourceDir}/build/ch32v30x_ob-release"
         },
         {
-            "name": "ch32v30x_bmp-debug",
+            "name": "ch32v30x_ob-debug",
             "displayName": "CH32V30x BMP (Debug)",
             "inherits": "base-debug",
             "cacheVariables": {
-                "BOARD": "ch32v30x_bmp"
+                "BOARD": "ch32v30x_ob"
             },
-            "binaryDir": "${sourceDir}/build/ch32v30x_bmp-debug"
+            "binaryDir": "${sourceDir}/build/ch32v30x_ob-debug"
         }
     ],
     "buildPresets": [
         {
-            "name": "ch32v30x_bmp-release",
-            "configurePreset": "ch32v30x_bmp-release",
+            "name": "ch32v30x_ob-release",
+            "configurePreset": "ch32v30x_ob-release",
             "jobs": 8
         },
         {
-            "name": "ch32v30x_bmp-debug",
-            "configurePreset": "ch32v30x_bmp-debug",
+            "name": "ch32v30x_ob-debug",
+            "configurePreset": "ch32v30x_ob-debug",
             "jobs": 8
         }
     ]

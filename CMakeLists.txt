@@ -50,7 +50,7 @@ set(SDK_ROOT       "${CMAKE_CURRENT_SOURCE_DIR}/SDK"
 # ------------------------------------------------------------------------------
 # Board selection
 # ------------------------------------------------------------------------------
-set(BOARD "ch32v30x_bmp" CACHE STRING "Target board directory under boards/")
+set(BOARD "ch32v30x_ob" CACHE STRING "Target board directory under boards/")
 set(BOARD_DIR "${CMAKE_CURRENT_SOURCE_DIR}/boards/${BOARD}")
 
 file(GLOB _board_cfgs RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}/boards" "${CMAKE_CURRENT_SOURCE_DIR}/boards/*/board_config.h")

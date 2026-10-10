@@ -19,7 +19,7 @@
 */
 //#define SYSCLK_FREQ_HSE    HSE_VALUE
 /*
- * This board carries a 24 MHz HSE (boards/ch32v30x_bmp/board.cmake defines
+ * This board carries a 24 MHz HSE (boards/ch32v30x_ob/board.cmake defines
  * HSE_VALUE = 24000000), so the WCH "48 MHz" recipe - PLL = HSE * 6, see
  * SetSysClockTo48_HSE() below - actually runs the core at 144 MHz.  The WCH
  * name is kept so this clock file stays comparable with upstream, but the real

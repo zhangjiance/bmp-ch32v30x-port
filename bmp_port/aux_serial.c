@@ -1,8 +1,11 @@
 /*
  * aux_serial.c
  *
- * Target UART for the CH32V30x BMP port: USART3 on PB10 (TX) / PB11 (RX), the
- * physical side of the second CDC function.
+ * Target UART for the CH32V30x BMP port: the board's application UART
+ * (BOARD_APP_UART*, see boards/ch32v30x_ob/board_config.h), the physical side
+ * of the second CDC function.  The board layer owns the hardware - instance,
+ * pins and clocks, all through board_init_app_uart() - while this file owns the
+ * line format and the DMA data path on top of it.
  *
  * The data path is DMA + interrupt driven end to end and never depends on the
  * main loop, which is normally parked inside gdb_if_getchar() waiting for a GDB
@@ -22,13 +25,17 @@
  */
 #include "aux_serial.h"
 
-#include "debug.h" /* ch32v30x_conf.h -> GPIO / RCC / USART / DMA / misc */
+#include "board.h"  /* BOARD_APP_UART*: the USB2UART hardware */
+#include "debug.h"  /* ch32v30x_conf.h -> GPIO / RCC / USART / DMA / misc */
 
-#define AUX_UART          USART3
-#define AUX_TX_GPIO_PORT  GPIOB
-#define AUX_TX_GPIO_PIN   GPIO_Pin_10
-#define AUX_RX_GPIO_PORT  GPIOB
-#define AUX_RX_GPIO_PIN   GPIO_Pin_11
+#if !BOARD_HAS_APP_UART
+#error "aux_serial needs an application UART: the board must provide BOARD_APP_UART*"
+#endif
+
+/* The UART is the board's application UART.  Its instance, pins and clocks are
+ * BOARD_APP_UART* macros, applied by the board in board_init_app_uart(); the
+ * probe only builds the data path on top. */
+#define AUX_UART          BOARD_APP_UART
 
 /*
  * CH32V30x DMA1 request mapping: USART3_TX is channel 2, USART3_RX is
@@ -75,7 +82,7 @@ static volatile bool tx_busy;
 static aux_serial_sink_fn usb_sink;
 
 static struct aux_line_coding line_coding = {
-    .baudrate = 115200U,
+    .baudrate = BOARD_APP_UART_BAUDRATE,
     .data_bits = 8U,
     .parity = 0U,
     .stop_bits = 1U,
@@ -253,25 +260,6 @@ static void uart_apply_encoding(void)
     USART_Init(AUX_UART, &uart);
 }
 
-static void aux_serial_init_gpio(void)
-{
-    GPIO_InitTypeDef gpio = { 0 };
-
-    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOB, ENABLE);
-
-    /* TX is driven high before the alternate function takes over, so the pin
-     * does not glitch low (which the target would see as a start bit). */
-    GPIO_SetBits(AUX_TX_GPIO_PORT, AUX_TX_GPIO_PIN);
-    gpio.GPIO_Pin = AUX_TX_GPIO_PIN;
-    gpio.GPIO_Speed = GPIO_Speed_50MHz;
-    gpio.GPIO_Mode = GPIO_Mode_AF_PP;
-    GPIO_Init(AUX_TX_GPIO_PORT, &gpio);
-
-    gpio.GPIO_Pin = AUX_RX_GPIO_PIN;
-    gpio.GPIO_Mode = GPIO_Mode_IPU;
-    GPIO_Init(AUX_RX_GPIO_PORT, &gpio);
-}
-
 static void aux_serial_init_rx_dma(void)
 {
     DMA_InitTypeDef dma = { 0 };
@@ -321,10 +309,11 @@ static void aux_serial_init_tx_dma(void)
 
 void aux_serial_init(void)
 {
-    RCC_APB1PeriphClockCmd(RCC_APB1Periph_USART3, ENABLE);
     RCC_AHBPeriphClockCmd(RCC_AHBPeriph_DMA1, ENABLE);
 
-    aux_serial_init_gpio();
+    /* Board side: instance, pins, clocks and the power-on line format. */
+    board_init_app_uart();
+    /* Probe side: the live line format the CDC host asked for. */
     uart_apply_encoding();
 
     tx_head = tx_tail = 0U;
