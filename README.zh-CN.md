@@ -129,11 +129,13 @@ cmake --build --preset ch32v30x_ob-release
    ```
 4. 需要重新进入 bootloader 时：`dfu-util -e`（或 GDB 里 `monitor bootloader`）。
 
-## 已修复：GDB 长回复卡住（根因与修复）
+## GDB 回复：IN 传输问题与回复长度上限
 
 ### 症状
 
-`att 1`（或任何会产生长回复的操作）失败：
+在 GDB CDC 接口上观测到两种失败模式，表现都像"IN 传输卡住"。
+
+**（a）`att 1`（或任何会产生长回复的操作）失败：**
 
 ```
 $qXfer:features:read:target.xml:0,7fb
@@ -147,6 +149,11 @@ Truncated register 22 in remote 'g' packet
 `mon jt`、`mon swd_scan` 这类短回复正常，所以表现为"目标能识别、但 attach 不上"。
 把 GDB 超时放大（`set remotetimeout 20`）也没用：那份回复要等到**下一条主机命令**
 之后才出现。
+
+**（b）flash 回读（`m` 读）偶发卡住。** 主机要么在整整一个超时窗口内**一个字节都收
+不到**，要么收到的字节流过不了 GDB 组帧校验。它**与目标无关**：只要数据到了，其 CRC32
+与源镜像完全一致。最初看着像"与速度相关"（把探针时钟设成固定值似乎就好了），那是误判，
+原因见下面的"回复长度上限"。
 
 ### 根因
 
@@ -173,8 +180,9 @@ Truncated register 22 in remote 'g' packet
    即回复的第 2..n 块是从中断上下文排队的，这条路径在本控制器上不稳定。多包 **OUT 是
    好的**（DFU bootloader 能收 4 KB 整包传输），只有 IN 方向有问题。
 
-**不是** 位操作（SWD/JTAG）的问题：XML 生成只做字符串格式化、不访问目标，而同一段
-bitbang 路径上的短回复始终正常。
+**不是** 位操作（SWD/JTAG）的问题：XML 生成只做字符串格式化、不访问目标，同一段
+bitbang 路径上的短回复始终正常，而且失败模式（b）是在一次普通 `m` 读上复现的——那条回复
+与目标时序无关。SWD/JTAG 时钟及其占空比是单独测量过的，与本文无关。
 
 ### 修复
 
@@ -192,7 +200,8 @@ bitbang 路径上的短回复始终正常。
 - **端口**（`bmp_port/cdc_acm_dual.c`）
   - `gdb_in_send()` 把回复切成 `USB_XFER_SIZE`（512 字节）的块，**只在线程上下文**一次
     装一块并等它完成。回复不再依赖驱动的中断续包，完成回调只负责清 busy 标志。
-  - `GDB_PACKET_BUFFER_SIZE` 已改回 **2048**。
+  - `GDB_PACKET_BUFFER_SIZE` 现为 **496**，让每条回复都落在单个 USB 包内——见下面的
+    "回复长度上限"。
   - **满包回复用 ZLP 收尾**（`c957249` `fix: terminate full-size GDB replies with a ZLP`）：
     bulk 传输只由**短包**终结，而 `usbd_ep_start_write()` 自己不会补零长包；当回复长度恰好是
     `USB_XFER_SIZE`（512 字节）的整数倍时，传输停在满包上，主机认为后面还有数据，整份回复要拖
@@ -200,12 +209,53 @@ bitbang 路径上的短回复始终正常。
     复组帧后是 `$` + `m` + 2043 + `#` + 2 字节校验 = 2048 = 4 × 512，就是 attach 后卡住的
     直接原因。现在发送结束时若长度为 `USB_XFER_SIZE` 的整数倍，就再发一个**零长包**（ZLP）作为
     终止符并等它完成。
-- **对客户端的要求**：单次 `m`（十六进制读内存）长度仍然不能超过
-  `GDB_PACKET_BUFFER_SIZE / 2`，现在是 **1024 字节**（判定在
+- **对客户端的要求**：单次 `m`（十六进制读内存）长度不能超过
+  `GDB_PACKET_BUFFER_SIZE / 2`，现在是 **248 字节**（判定在
   `third_party_components/blackmagic/src/gdb_main.c` 的
-  `len > GDB_PACKET_BUFFER_SIZE / 2U`），超了直接回 `E02`。真正的 GDB 会按广播的 `PacketSize` 自动分块，自己实现协议的客户端必须尊重它
-  或解析 `PacketSize`。另外留意这类工具"读不回就用源数据补齐 CRC"的兜底：那样得到的
-  CRC 相等并不代表读回校验通过。
+  `len > GDB_PACKET_BUFFER_SIZE / 2U`），超了直接回 `E02`。按广播的 `PacketSize`
+  自动分块的客户端（libgdb，以及 `static/blackmagic-utils/` 下的 webui）会自动适配；
+  自己手写协议的客户端必须尊重它或解析 `PacketSize`。另外留意这类工具"读不回就用源数据
+  补齐 CRC"的兜底：那样得到的 CRC 相等并不代表读回校验通过。
+
+### 回复长度上限：为什么 `GDB_PACKET_BUFFER_SIZE` 是 496
+
+真正消掉故障的是这一条。GDB 回复的组帧是 `'$' + payload + '#' + 2 字节校验`，所以
+
+```
+一条回复的线长  =  GDB_PACKET_BUFFER_SIZE + 4
+落在一个 512 字节 USB 包内  <=>  GDB_PACKET_BUFFER_SIZE <= 508
+顺便躲开 ZLP 路径          <=>  GDB_PACKET_BUFFER_SIZE <= 507
+```
+
+- **496**（496 + 4 = 500 < 512）让每条回复**既**在单包内、**又**不碰 ZLP 路径。
+  `gdb_in_send()` 因此恒定退化为"**一次 `usbd_ep_start_write()` + 无 ZLP**"：
+  分块续传那条路径不是"概率低"，而是**不可达**。
+- 这不是在给一个坏控制器打补丁，而是这块控制器的**正规用法**，见下一节。
+- 代价是读长度（单次 `m` 从 512/1024 降到 248 字节），全量转储会多几百次往返。
+
+### 为什么必须一个包一个包发：这块控制器没有 TX burst
+
+- CherryUSB 自己的文档把 USB IP 分成两类：**硬件分包**（IP 自带 DMA / descriptor DMA，
+  自己把一次传输拆包）与**软件分包**（IP 只有 FIFO，驱动必须一个包一个包地交给它）。
+  CH32V30x USBHS 设备控制器属于后者——这就是上面说的"没有多包 burst"，也是新版 IP
+  （`port/wch/usbhs`）有 `UEP_TX_BURST` 而它没有的原因。
+- WCH 官方文档把约定写得同样直白：MCU 备好数据和长度，主机下发 IN 令牌时硬件上传
+  **一个包**，然后进入 IN 中断置 NAK、翻转 toggle。官方示例为此保留了一个 **busy** 标志，
+  **在 IN 中断里清除**，并且明确的坑是：**凡是把端点置为 NAK 的地方都必须同时清 busy**。
+  长回复被明确归为调用方的责任（"描述符较长时主机会分多个 IN 包获取，剩下的数据要在
+  IN 中断里接着准备"），零长包同理。
+
+与其他 BMP 端口对比：
+
+| 端口 | `GDB_PACKET_BUFFER_SIZE` | 端点 MPS | 每条回复的包数 |
+|---|---|---|---|
+| 上游 BMP（STM32F103 native） | 1024 | 64（全速） | 最多 17 —— STM32 的 IP 会续发，没问题 |
+| `bmp-hpm-port`（HPM5301） | 16384 | 512（高速） | 最多 33 —— 硬件分包，没问题 |
+| `ch32v305_dap` DAPLink | 不适用（`DAP_PACKET_SIZE` = 512） | 512 | **恒为 1** |
+| **本端口** | **496** | 512 | **恒为 1** |
+
+同样用这块控制器的 DAPLink 是靠协议天然规避的：它的协议包就是 512 字节 = 端点 MPS，
+所以那边也不会走续传分支。
 
 ### 为什么"满包没有终止符"只在 Windows 上发作
 
@@ -224,8 +274,22 @@ bitbang 路径上的短回复始终正常。
   （`vhci_hcd` + `cdc_acm`，还是 512 字节一个），只是被转发到 Windows 上执行，传输的终止语义
   依旧按 Linux 的来，问题不会出现。
 
-### 仍未处理
+请注意这一节只覆盖**终止符**这一类（回复长度正好是 512 的整数倍）。而**续传**失败是
+与主机无关的：`GDB_PACKET_BUFFER_SIZE = 2048` 时一条 256 字节的 `m` 回复是
+516 = 512 + 4 字节，回读卡顿在 Linux 上用 Chrome/Web Serial 客户端同样复现。把回复限制在
+单包内可以同时避开这两类。
 
+### 残留风险
+
+- `gdb_in_send()` 在某个块的完成事件没有在 `GDB_IN_XFER_TIMEOUT_MS`（1000 ms）内到达时，
+  仍然会**丢掉整条回复**（置 `gdb_in_len = 0`），于是这块控制器上的一次抖动会变成"客户端
+  什么都没收到"，而不是"重试一次"。改成**有界地重发该块**即可自愈。496 下每条回复只有
+  1 个块（原为 2..9 个），这就是它不再出现的直接原因。
+- `usbd_event_handler()` 只处理了 `USBD_EVENT_RESET`，没有处理
+  `USBD_EVENT_DISCONNECTED`。目前没有无限阻塞的等待，所以这条只是预防性建议。
+- 若将来确实需要一条回复超过一个包，**请去修续传路径，而不是先调大
+  `GDB_PACKET_BUFFER_SIZE`**。在这块控制器上可行的做法（见 `ch32v305_dap`）是：以**整条
+  协议包**为粒度、由上层队列加 idle 标志来发送，而不是从 IN 中断里续发同一条长传输。
 - `blackmagic` 子仓的 `riscv_debug.c` 里 DMI `RV_DMI_TOO_SOON` 重试是无限循环，链路边缘时
   表现为"卡死且无提示"，改成有上限并报错更好定位。
 - 本驱动的 `usbd_get_port_speed()` 硬编码返回 `USB_SPEED_HIGH`，没有读

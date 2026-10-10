@@ -149,11 +149,14 @@ Artifacts: `build/ch32v30x_ob-release/bmp-ch32v30x-port.{elf,hex,bin}`.
    ```
 4. To go back to the bootloader: `dfu-util -e` (or `monitor bootloader` in GDB).
 
-## Fixed: long GDB replies stalled (root cause)
+## GDB replies: the IN transfer problem and the reply-size limit
 
 ### Symptom
 
-`att 1` (or anything else that produces a long reply) fails:
+Two failure modes were observed on the GDB CDC interface, both looking like a
+stalled IN transfer.
+
+**(a) `att 1`, or anything else that produces a long reply, fails:**
 
 ```
 $qXfer:features:read:target.xml:0,7fb
@@ -167,6 +170,13 @@ Truncated register 22 in remote 'g' packet
 Short replies (`mon jt`, `mon swd_scan`) work, so it looks like "the target is
 detected but attach fails". Raising the GDB timeout (`set remotetimeout 20`) does
 not help either: the reply only shows up after the **next host packet**.
+
+**(b) Flash readback (`m` reads) intermittently stalls.** The host either receives
+**no reply bytes at all** within a whole timeout window, or receives a byte stream
+that fails the GDB frame checksum. It is *not* target dependent: whenever the data
+did arrive, its CRC32 matched the source image exactly. It also looked
+speed-dependent at first (a fixed probe clock appeared to fix it) - that was a red
+herring, see the reply-size limit below.
 
 ### Root cause
 
@@ -202,8 +212,10 @@ IN direction only, plus a port-layer bug that kept triggering it.
    transfers), so only the IN direction is affected.
 
 This is **not** a bit-banging (SWD/JTAG) problem: building that XML is pure string
-formatting and does not touch the target, while short replies over the very same
-bit-banged path always worked.
+formatting and does not touch the target, short replies over the very same
+bit-banged path always worked, and failure mode (b) reproduced on a plain `m` read
+whose reply never depended on target timing. The SWD/JTAG clock and its duty cycle
+were measured separately and are unrelated to this.
 
 ### Fix
 
@@ -224,7 +236,8 @@ bit-banged path always worked.
     chunk at a time **from thread context** and waits for that chunk's completion.
     No reply depends on the driver's interrupt continuation any more, and the
     completion callback only clears the busy flag.
-  - `GDB_PACKET_BUFFER_SIZE` is back at **2048**.
+  - `GDB_PACKET_BUFFER_SIZE` is now **496**, so every reply stays inside one USB
+    packet - see "The reply-size limit" below.
   - **Full-size replies end with a ZLP** (`c957249` `fix: terminate full-size GDB replies
     with a ZLP`): a bulk transfer is only terminated by a **short packet**, and
     `usbd_ep_start_write()` never appends a zero-length packet by itself. A reply whose
@@ -235,17 +248,67 @@ bit-banged path always worked.
     bytes = 2048 = 4 x 512, which is the direct cause of the hang after `attach`. The
     send path now checks whether the length is a multiple of `USB_XFER_SIZE` and, if so,
     sends a terminating **zero-length packet** (ZLP) and waits for it to complete.
-- **Client requirement**: a single `m` (hex memory read) must still not exceed
-  `GDB_PACKET_BUFFER_SIZE / 2`, now **1024 bytes** (the check is
+- **Client requirement**: a single `m` (hex memory read) must not exceed
+  `GDB_PACKET_BUFFER_SIZE / 2`, now **248 bytes** (the check is
   `len > GDB_PACKET_BUFFER_SIZE / 2U` in
   `third_party_components/blackmagic/src/gdb_main.c`), otherwise
-  the stub answers `E02`. GDB chunks by the announced `PacketSize` itself, but a
-  client that speaks the protocol on its own has to respect it or parse
-  `PacketSize`. Also watch out for clients that fill the CRC with source data for
-  the chunks they could not read back: their checksums then match without anything
-  having been verified.
+  the stub answers `E02`. Clients that chunk by the announced `PacketSize` (libgdb,
+  and the webui under `static/blackmagic-utils/`) adapt by themselves; a client that
+  speaks the protocol by hand has to respect it or parse `PacketSize`. Also watch
+  out for clients that fill the CRC with source data for the chunks they could not
+  read back: their checksums then match without anything having been verified.
 
-### Why the full-packet problem only shows up on Windows
+### The reply-size limit: why `GDB_PACKET_BUFFER_SIZE` is 496
+
+This is what actually removed the failures. A reply is framed as
+`'$' + payload + '#' + 2 checksum bytes`, so
+
+```
+wire length of a reply  =  GDB_PACKET_BUFFER_SIZE + 4
+fits one 512 byte USB packet     <=>  GDB_PACKET_BUFFER_SIZE <= 508
+also stays off the ZLP path      <=>  GDB_PACKET_BUFFER_SIZE <= 507
+```
+
+- **496** (496 + 4 = 500 < 512) keeps every reply inside a single USB packet *and*
+  away from the ZLP path. `gdb_in_send()` then degenerates to exactly one
+  `usbd_ep_start_write()` and no ZLP, every single time: the chunked continuation
+  path is not merely unlikely, it is **unreachable**.
+- This is not a workaround for a broken controller - it is the intended way to use
+  this controller, see the next section.
+- The cost is the read size (248 instead of 512/1024 bytes per `m`) and therefore a
+  few hundred extra round trips for a full memory dump.
+
+### Why one packet at a time: this controller has no TX burst
+
+- CherryUSB's own documentation splits USB IP into **hardware packetization** (the
+  IP owns DMA / descriptor DMA and splits a transfer itself) and **software
+  packetization** (the IP only has a FIFO and the driver must hand it one packet at
+  a time). The CH32V30x USBHS device controller is the second kind - that is the
+  "no multi-packet burst" note above, and why the newer IP behind `port/wch/usbhs`
+  has `UEP_TX_BURST` while this one does not.
+- WCH's own documentation states the contract plainly: the MCU prepares the data and
+  the length, the hardware uploads **one packet** when the host sends an IN token,
+  and the IN interrupt then sets NAK and flips the toggle. Their examples keep a
+  **busy** flag for exactly this, cleared **in the IN interrupt**, and the
+  documented pitfall is that *every* place which sets the endpoint to NAK must also
+  clear that flag. Long replies are explicitly the caller's problem ("if the
+  descriptor is long the host fetches it in several IN packets and the remaining
+  data has to be prepared in the IN interrupt"), and so are zero-length packets.
+
+Other BMP ports, for comparison:
+
+| Port | `GDB_PACKET_BUFFER_SIZE` | Endpoint MPS | Packets per reply |
+|---|---|---|---|
+| upstream BMP (STM32F103 native) | 1024 | 64 (full speed) | up to 17 - the STM32 IP continues them, fine |
+| `bmp-hpm-port` (HPM5301) | 16384 | 512 (high speed) | up to 33 - hardware packetization, fine |
+| `ch32v305_dap` DAPLink | n/a (`DAP_PACKET_SIZE` 512) | 512 | **always exactly 1** |
+| **this port** | **496** | 512 | **always exactly 1** |
+
+DAPLink on the very same controller avoids this by construction: its protocol packet
+is 512 bytes = the endpoint MPS, so the continuation branch is never taken there
+either.
+
+### Why the missing-terminator case only showed up on Windows
 
 The very same reply has always been fine on Linux, including a device attached into WSL
 through `usbipd` - because what decides "when is an IN transfer finished" is the **host
@@ -266,8 +329,26 @@ side USB stack**, and Linux and Windows do it differently:
   (`vhci_hcd` + `cdc_acm`, still 512 bytes each) and merely executed on Windows, so the
   transfer-termination semantics stay Linux's and the problem never appears.
 
-### Still open
+Note this only covers the *terminator* case (a reply whose length is an exact multiple
+of 512 bytes). The **continuation** failure is host independent: with
+`GDB_PACKET_BUFFER_SIZE = 2048` a 256 byte `m` reply is 516 = 512 + 4 bytes, and the
+readback stalls reproduced from a Chrome/Web Serial client on Linux just as well.
+Keeping replies inside one packet avoids both cases.
 
+### Residual risks
+
+- `gdb_in_send()` still **drops the whole reply** when a chunk's completion does not
+  arrive within `GDB_IN_XFER_TIMEOUT_MS` (1000 ms) - it sets `gdb_in_len = 0`, so a
+  hiccup on this controller becomes "the client got nothing" instead of "one retry".
+  Re-arming the same chunk (bounded) would self-heal instead. With 496 the exposure
+  is one chunk per reply instead of 2..9, which is why it no longer shows.
+- `usbd_event_handler()` handles `USBD_EVENT_RESET` but not `USBD_EVENT_DISCONNECTED`.
+  Nothing blocks unboundedly today, so this is only a precaution.
+- If a reply ever has to exceed one packet again, **fix the continuation path rather
+  than raising `GDB_PACKET_BUFFER_SIZE`**. The pattern that works on this controller
+  (see `ch32v305_dap`) is to send whole protocol packets from an upper-layer queue
+  guarded by an idle flag, instead of continuing one long transfer from the IN
+  interrupt.
 - The DMI `RV_DMI_TOO_SOON` retry loops in the blackmagic submodule's
   `riscv_debug.c` are unbounded, so a marginal link shows up as a hang with no message; a bounded
   retry plus an error message locates it much faster.
