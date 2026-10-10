@@ -13,17 +13,22 @@
  */
 extern volatile bool platform_gdb_idle;
 
+/* Target run state, written by the macros below and read by the status LED
+ * policy (probe_status_tick() in platform.c). */
+extern uint32_t running_status;
+
 #define SET_RUN_STATE(state)     \
     do {                         \
         running_status = (state); \
     } while (0)
 
 /*
- * The status LED is owned by board_led_tick() in board.c, which derives every
- * state it shows from two things it can read: cur_target (attached or not) and
- * running_status.  Neither these macros nor SET_RUN_STATE() touch the LED, they
- * only maintain running_status.  Entering the idle state clears the run state
- * so a stale "running" cannot keep the LED blinking.
+ * The status LED is driven from the probe's periodic tick in platform.c, which
+ * derives every state it shows from two things it can read: cur_target
+ * (attached or not) and running_status.  Neither these macros nor
+ * SET_RUN_STATE() touch the LED, they only maintain running_status.  Entering
+ * the idle state clears the run state so a stale "running" cannot keep the LED
+ * blinking.
  */
 #define SET_IDLE_STATE(state)        \
     do {                             \

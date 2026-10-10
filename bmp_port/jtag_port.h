@@ -1,16 +1,20 @@
 /*
  * SWD/JTAG pin layer for the CH32V305/CH32V30x port.
  *
- * Only these PIN_* / LED_* / TIMESTAMP_GET macros are platform specific:
- * swdptap.c and jtagtap.c contain the protocol and only call into this header.
+ * Only these PIN_* / TIMESTAMP_GET macros are platform specific: swdptap.c and
+ * jtagtap.c contain the protocol and only call into this header.  The debug
+ * pins belong to the probe, so their bring-up is jtag_port_init() (jtag_port.c);
+ * the board layer (boards/ch32v30x_bmp/) knows nothing about SWD/JTAG.
  *
  * Pin mapping:
  *   PB14 -> SWCLK/TCK
- *   PB15 -> SWDIO/TMS   (driven open-drain, see board.c)
+ *   PB15 -> SWDIO/TMS   (push-pull, switched to input for SWD reads)
  *   PB13 -> TDI
  *   PB12 -> TDO
- *   PA5  -> status LED
- *   PA6  -> BOOT button (to GND, active low)
+ *
+ * The status LED (PA5) and BOOT button (PA6) are board pins: they are BOARD_*
+ * macros in boards/ch32v30x_bmp/board_config.h and are reached through the
+ * board primitives board_led_write() / board_read_boot_pin().
  */
 #ifndef __JTAG_PORT_H__
 #define __JTAG_PORT_H__
@@ -29,6 +33,9 @@
 #define __WEAK __attribute__((weak))
 #endif
 
+/* Configure the SWD/JTAG pins (PB12/PB13/PB14/PB15) as outputs, idle high. */
+void jtag_port_init(void);
+
 /* ---------------- pin assignment ---------------- */
 #define PIN_TCK_GPIO_PORT GPIOB
 #define PIN_TCK_GPIO_PIN  GPIO_Pin_14
@@ -41,20 +48,6 @@
 
 #define PIN_TDO_GPIO_PORT GPIOB
 #define PIN_TDO_GPIO_PIN  GPIO_Pin_12
-
-/*
- * Status LED: PA5 sits on the cathode side of the LED, whose anode goes to 3V3
- * through its series resistor, so the pin sinks the current - driving it low
- * lights the LED and driving it high turns it off.
- */
-#define PIN_LED_GPIO_PORT  GPIOA
-#define PIN_LED_GPIO_PIN   GPIO_Pin_5
-#define PIN_LED_ACTIVE_LOW 1
-
-/* BOOT button: PA6 to GND with the internal pull-up, so pressed reads low. */
-#define PIN_BOOT_GPIO_PORT       GPIOA
-#define PIN_BOOT_GPIO_PIN        GPIO_Pin_6
-#define PIN_BOOT_ACTIVE_LOW      1
 
 /* Compiler barrier, keeps the GPIO accesses in program order. */
 #define PIN_BARRIER() __asm__ volatile("" ::: "memory")
@@ -167,27 +160,9 @@ __STATIC_FORCEINLINE void PIN_nRESET_OUT(uint32_t bit)
     (void)bit;
 }
 
-/*
- * ---------------- LED ----------------
- * The single status LED is owned by the board layer - board_led_write() in
- * boards/ch32v30x_bmp/board.c, driven from the 100 ms timer so it is dark
- * without an attached target, solid while one is stopped and blinking while it
- * runs.  Only the pin definition and PIN_LED_ACTIVE_LOW above are needed here.
- */
-
 __STATIC_INLINE uint32_t TIMESTAMP_GET(void)
 {
     return platform_time_ms();
-}
-
-/* ---------------- BOOT button ----------------
- * Sampled by the 100 ms TIM3 interrupt in board.c while the main loop is parked
- * in gdb_if_getchar() waiting for a GDB command. */
-__STATIC_INLINE uint32_t PIN_BOOT_PRESSED(void)
-{
-    uint32_t sta = (PIN_BOOT_GPIO_PORT->INDR & PIN_BOOT_GPIO_PIN) ? 1U : 0U;
-    PIN_BARRIER();
-    return PIN_BOOT_ACTIVE_LOW ? (sta == 0U) : (sta != 0U);
 }
 
 #endif /* __JTAG_PORT_H__ */

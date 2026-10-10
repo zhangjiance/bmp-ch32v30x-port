@@ -10,9 +10,66 @@
 #include "platform.h"
 #include "board.h"
 #include "boot_trigger_port.h"
+#include "gdb_main.h" /* cur_target, for the status LED policy */
 
 /* set by SET_IDLE_STATE() in platform.h */
 volatile bool platform_gdb_idle = false;
+
+/* set by SET_RUN_STATE() in platform.h */
+uint32_t running_status = 0;
+
+/*
+ * Probe policy, run from the board's periodic tick.
+ *
+ * The board layer only offers primitives (board_led_write(), board_read_boot_pin())
+ * and a registerable tick (board_timer_create()); what the LED reports and what
+ * a held BOOT button does is decided here, on the application side.  The tick
+ * is the only thing that still runs while the main loop is parked in
+ * gdb_if_getchar() waiting for a GDB command.
+ */
+#define BOOT_BUTTON_TICK_MS     100U /* board tick period                      */
+#define BOOT_BUTTON_PRESS_TICKS 5U   /* pressed ticks => 500 ms before boot    */
+#define LED_BLINK_TICKS         1U   /* ticks per LED toggle: 1 => 100 ms      */
+
+/*
+ * Status LED:
+ *   - no target attached                       -> dark
+ *   - attached and stopped, which includes
+ *     while a GDB command is being executed     -> solid on
+ *   - attached and running                      -> blinking
+ */
+static void probe_status_tick(void)
+{
+    static uint32_t pressed;
+    static uint32_t led_ticks;
+    static uint32_t led_on;
+
+    if (!cur_target) {
+        /* Nothing attached, the LED has nothing to report. */
+        led_ticks = 0U;
+        led_on = 0U;
+        board_led_write(0U);
+    } else if (!running_status) {
+        /* Attached and stopped: solid on. */
+        led_ticks = 0U;
+        led_on = 1U;
+        board_led_write(1U);
+    } else if (++led_ticks >= LED_BLINK_TICKS) {
+        led_ticks = 0U;
+        led_on = !led_on;
+        board_led_write((uint8_t)led_on);
+    }
+
+    /* BOOT button: held long enough resets into the DFU bootloader. */
+    if (board_read_boot_pin()) {
+        if (++pressed >= BOOT_BUTTON_PRESS_TICKS) {
+            /* Writes the BKP hand-shake and resets; never returns. */
+            boot_trigger_reboot_to_boot();
+        }
+    } else {
+        pressed = 0U;
+    }
+}
 
 int platform_hwversion(void)
 {
@@ -21,6 +78,7 @@ int platform_hwversion(void)
 
 void platform_init(void)
 {
+    board_timer_create(BOOT_BUTTON_TICK_MS, probe_status_tick);
 }
 
 void platform_nrst_set_val(bool assert)

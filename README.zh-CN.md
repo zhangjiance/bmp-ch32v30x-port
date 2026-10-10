@@ -35,7 +35,9 @@ shared/boot_protocol.h    boot 与 app 的约定（分区、BKP 触发）
 | 目标串口 TX (USART3) | PB10 |
 | 目标串口 RX (USART3) | PB11 |
 
-nTRST / nSRST 未接线（空实现）。引脚定义在 `bmp_port/jtag_port.h`。
+nTRST / nSRST 未接线（空实现）。SWD/JTAG 引脚定义在 `bmp_port/jtag_port.h`；状态 LED 与
+BOOT 按键属于板级引脚（`boards/ch32v30x_bmp/board_config.h` 里的 `BOARD_LED_*` /
+`BOARD_BOOT_*`），通过板级原语 `board_led_write()` / `board_read_boot_pin()` 访问。
 
 SWD/JTAG 只做 **GPIO 位操作**（`bmp_port/jtag_port.h` 提供 `PIN_*` 宏），没有 SPI 加速
 路径，时序完全确定。
@@ -86,8 +88,9 @@ SWD/JTAG 只做 **GPIO 位操作**（`bmp_port/jtag_port.h` 提供 `PIN_*` 宏�
   BKP 握手（跨 `NVIC_SystemReset()` 保留）：
   - `dfu-util -e`（DFU_DETACH）→ `platform_request_boot()`
   - GDB 侧 `monitor bootloader`
-  - 按住 BOOT 按键（PA6）：`boards/ch32v30x_bmp/board.c` 里的 100 ms TIM3
-    中断采样按键，因此在主循环阻塞于 `gdb_if_getchar()` 等 GDB 命令时依然有效
+  - 按住 BOOT 按键（PA6）：探测端通过 `board_timer_create()`（`bmp_port/platform.c`）
+    注册 100 ms 周期回调，由板级的 TIM3 中断调用，因此在主循环阻塞于
+    `gdb_if_getchar()` 等 GDB 命令时依然有效
 
 ## 构建
 

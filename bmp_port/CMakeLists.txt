@@ -17,7 +17,8 @@
 #   third_party_components/
 #     blackmagic/     submodule: BMP core + target drivers
 #     CherryUSB/      submodule: USB stack + CH32V30x USBHS device controller
-#   boards/<board>/ board BSP (pins live in bmp_port/jtag_port.h)
+#   boards/<board>/ board BSP: board_config.h (BOARD_* pins/features) + board.c
+#                   (primitives); the probe's SWD/JTAG pins live in jtag_port.h
 # ==============================================================================
 
 set(PROJECT_ROOT   "${CMAKE_SOURCE_DIR}")
@@ -63,6 +64,7 @@ set(bmp_port_srcs
     ${BMP_PORT_DIR}/platform.c
     ${BMP_PORT_DIR}/timing_ch32.c
     # GPIO bit banged debug interfaces
+    ${BMP_PORT_DIR}/jtag_port.c
     ${BMP_PORT_DIR}/swdptap.c
     ${BMP_PORT_DIR}/jtagtap.c
     # USB: composite CDC ACM (GDB server + target UART) and the target UART

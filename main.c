@@ -56,6 +56,8 @@ static void bmp_poll_loop(void)
 int main(void)
 {
     board_init();
+    /* Probe-owned SWD/JTAG pins; the board layer does not know about them. */
+    jtag_port_init();
     cdc_acm_init(0, (uint32_t)USBHS_BASE);
 
     platform_init();

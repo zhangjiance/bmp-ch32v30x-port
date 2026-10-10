@@ -1,35 +1,28 @@
+/*
+ * board.c - board primitives for the CH32V30x Black Magic Probe.
+ *
+ * This file is the whole board layer.  It includes the SDK and the board's own
+ * headers (board.h, board_config.h) and nothing else: no probe, no application.
+ * Every board specific value it needs is a BOARD_* macro from board_config.h.
+ *
+ * It provides the primitives declared in board.h and owns the one periodic ISR
+ * the application may ask for through board_timer_create().  The ISR does not
+ * know what the callback does - it just calls it.
+ */
 #include "board.h"
-#include "ch32v30x.h"
-#include "debug.h"
-/* cur_target: the status LED only reports a GDB session once a target is attached */
-#include "gdb_main.h"
-#include "system_ch32v30x.h"
-#include "jtag_port.h"
-#include "boot_trigger_port.h"
+#include "board_config.h"
+
+#include "debug.h" /* SDK: ch32v30x.h -> RCC / GPIO / TIM / misc */
 
 /* clock frequency the SysTick counter runs at (Hz), set in board_init() */
 static uint32_t systick_clock;
 
-/*
- * BOOT button watchdog.
- *
- * The probe spends its idle time parked inside gdb_if_getchar() waiting for the
- * next GDB command, so the main loop cannot sample the button like
- * ch32_hello_world does.  TIM3 therefore raises a 100 ms update interrupt that
- * samples PA6 and, once the button has read pressed for long enough, writes the
- * BKP hand-shake and resets into the DFU bootloader.
- *
- * SysTick is already used as a free-running time base (see board_init_systick()
- * below) and must not be given an interrupt, hence the dedicated timer.
- */
-#define BOOT_BUTTON_TICK_MS     100U  /* TIM3 update period                     */
-#define BOOT_BUTTON_PRESS_TICKS 5U    /* pressed samples => 500 ms before boot  */
-
-uint32_t running_status = 0;
+/* the single periodic callback the application may install (may be NULL) */
+static board_tick_cb tick_cb;
 
 /*
  * SysTick is used as a free running 64bit counter, which gives the millisecond
- * time base without needing an interrupt. Delays are derived from it too, so
+ * time base without needing an interrupt.  Delays are derived from it too, so
  * nothing else may reconfigure SysTick (Delay_Ms()/Delay_Us() from the WCH SDK
  * do, so they are intentionally NOT used here).
  */
@@ -58,195 +51,153 @@ void board_delay_ms(uint32_t ms)
     }
 }
 
+/*
+ * Optional console.  The WCH newlib printf() spins forever on an uninitialised
+ * USART, so this port leaves it off: BOARD_HAS_CONSOLE is simply not defined.
+ */
+void board_init_console(void)
+{
+#if defined(BOARD_HAS_CONSOLE) && BOARD_HAS_CONSOLE
+    USART_Printf_Init(BOARD_CONSOLE_BAUDRATE);
+#endif
+}
+
+/* -------------------------------------------------------------------------- */
+/* Status LED                                                                 */
+/* -------------------------------------------------------------------------- */
+#if BOARD_HAS_LED
+static void board_init_led(void)
+{
+    GPIO_InitTypeDef gpio = { 0 };
+
+#if BOARD_LED_NEEDS_JTAG_DISABLE
+    /* e.g. PB4 is JTDO by default: disable JTAG-DP but keep SW-DP alive so the
+     * pin becomes GPIO while the debug link stays usable. */
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_AFIO, ENABLE);
+    AFIO->PCFR1 = (AFIO->PCFR1 & 0xF8FFFFFFu) | 0x02000000u;
+#endif
+    RCC_APB2PeriphClockCmd(BOARD_LED_RCC, ENABLE);
+
+    /* Preload the off level (BOARD_LED_ACTIVE_LOW aware) before the pin becomes
+     * an output, so the LED does not flash on during bring-up. */
+    board_led_write(0U);
+
+    gpio.GPIO_Pin   = BOARD_LED_PIN;
+    gpio.GPIO_Mode  = GPIO_Mode_Out_PP;
+    gpio.GPIO_Speed = GPIO_Speed_50MHz;
+    GPIO_Init(BOARD_LED_GPIO, &gpio);
+}
+#endif /* BOARD_HAS_LED */
+
+void board_led_write(uint8_t state)
+{
+#if BOARD_HAS_LED
+    /* state != 0 means "LED on"; the pin may be active low. */
+    const uint8_t on = (state != 0U) ? 1U : 0U;
+    const uint8_t level = BOARD_LED_ACTIVE_LOW ? (uint8_t)!on : on;
+
+    GPIO_WriteBit(BOARD_LED_GPIO, BOARD_LED_PIN, level ? Bit_SET : Bit_RESET);
+#else
+    (void)state;
+#endif
+}
+
+void board_led_toggle(void)
+{
+#if BOARD_HAS_LED
+    static uint8_t on;
+
+    on ^= 1U;
+    board_led_write(on);
+#endif
+}
+
+/* -------------------------------------------------------------------------- */
+/* BOOT button                                                                */
+/* -------------------------------------------------------------------------- */
+#if BOARD_HAS_BOOT_BUTTON
 static void board_init_boot_button(void)
 {
     GPIO_InitTypeDef gpio = { 0 };
+
+    RCC_APB2PeriphClockCmd(BOARD_BOOT_RCC, ENABLE);
+
+    gpio.GPIO_Pin   = BOARD_BOOT_PIN;
+    /* Released level must be the "run the application" level. */
+    gpio.GPIO_Mode  = BOARD_BOOT_ACTIVE_LOW ? GPIO_Mode_IPU : GPIO_Mode_IPD;
+    gpio.GPIO_Speed = GPIO_Speed_50MHz;
+    GPIO_Init(BOARD_BOOT_GPIO, &gpio);
+}
+#endif /* BOARD_HAS_BOOT_BUTTON */
+
+bool board_read_boot_pin(void)
+{
+#if BOARD_HAS_BOOT_BUTTON
+    const BitAction level = GPIO_ReadInputDataBit(BOARD_BOOT_GPIO, BOARD_BOOT_PIN);
+
+    return BOARD_BOOT_ACTIVE_LOW ? (level == Bit_RESET) : (level == Bit_SET);
+#else
+    return false;
+#endif
+}
+
+/* -------------------------------------------------------------------------- */
+/* Periodic tick                                                              */
+/* -------------------------------------------------------------------------- */
+void board_timer_create(uint32_t ms, board_tick_cb cb)
+{
     TIM_TimeBaseInitTypeDef tim = { 0 };
 
-    /* PA6: input, pull-up when active low (released level = "run the app"). */
-    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA, ENABLE);
-    gpio.GPIO_Pin   = PIN_BOOT_GPIO_PIN;
-    gpio.GPIO_Mode  = PIN_BOOT_ACTIVE_LOW ? GPIO_Mode_IPU : GPIO_Mode_IPD;
-    gpio.GPIO_Speed = GPIO_Speed_50MHz;
-    GPIO_Init(PIN_BOOT_GPIO_PORT, &gpio);
+    tick_cb = cb;
 
-    /* TIM3: BOOT_BUTTON_TICK_MS update interrupt.  APB1 timer clock is HCLK. */
+    /*
+     * TIM3 update interrupt.  The prescaler gives a 10 kHz tick so the period
+     * only depends on the milliseconds asked for, independent of SystemCoreClock.
+     * APB1 timer clock is HCLK.  Default priority, same as the USBHS interrupt:
+     * neither preempts the other.
+     */
     RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM3, ENABLE);
-    tim.TIM_Prescaler     = (uint16_t)((SystemCoreClock / 10000U) - 1U); /* 10 kHz   */
-    tim.TIM_Period        = (uint16_t)((10000U * BOOT_BUTTON_TICK_MS / 1000U) - 1U);
+    tim.TIM_Prescaler     = (uint16_t)((SystemCoreClock / 10000U) - 1U);
+    tim.TIM_Period        = (uint16_t)((10000U * ms / 1000U) - 1U);
     tim.TIM_ClockDivision = TIM_CKD_DIV1;
     tim.TIM_CounterMode   = TIM_CounterMode_Up;
     TIM_TimeBaseInit(TIM3, &tim);
 
     TIM_ClearITPendingBit(TIM3, TIM_IT_Update);
     TIM_ITConfig(TIM3, TIM_IT_Update, ENABLE);
-    /* Default priority, same as the USBHS interrupt: neither preempts the
-     * other, and this ISR is only a GPIO read plus a counter. */
     NVIC_EnableIRQ(TIM3_IRQn);
     TIM_Cmd(TIM3, ENABLE);
 }
 
-/*
- * Status LED.
- *
- * The board has a single LED and it reports the GDB session:
- *   - no target attached                     -> dark
- *   - attached and stopped, which includes
- *     while a GDB command is being executed   -> solid on
- *   - attached and running                    -> blinking
- * The BOOT button tick below drives it, which is why no extra timer or
- * interrupt is needed.
- */
-#define LED_BLINK_TICKS 1U /* timer ticks per toggle: 1 => 100 ms */
-
-static void board_led_tick(void)
-{
-    static uint32_t led_ticks;
-    static uint32_t led_on;
-
-    if (!cur_target) {
-        /* Nothing attached, the LED has nothing to report. */
-        led_ticks = 0U;
-        led_on = 0U;
-        board_led_write(0U);
-        return;
-    }
-
-    if (!running_status) {
-        /* Attached and stopped: solid on. */
-        led_ticks = 0U;
-        led_on = 1U;
-        board_led_write(1U);
-        return;
-    }
-
-    if (++led_ticks >= LED_BLINK_TICKS) {
-        led_ticks = 0U;
-        led_on = !led_on;
-        board_led_write((uint8_t)led_on);
-    }
-}
-
-/*
- * Samples the BOOT button from the timer interrupt and ticks the status LED: an
- * ISR is the only place that still runs while the main loop is blocked on the
- * GDB endpoint.  The ISR stays minimal (a GPIO read, a counter and one LED
- * write) so the bit-banged SWD/JTAG timing only sees a very short, infrequent
- * interruption.
- */
 void TIM3_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
 void TIM3_IRQHandler(void)
 {
-    static uint32_t pressed;
-
     if (TIM_GetITStatus(TIM3, TIM_IT_Update) == RESET) {
         return;
     }
     TIM_ClearITPendingBit(TIM3, TIM_IT_Update);
 
-    board_led_tick();
-
-    if (PIN_BOOT_PRESSED()) {
-        if (++pressed >= BOOT_BUTTON_PRESS_TICKS) {
-            /* Writes the BKP hand-shake and resets; never returns. */
-            boot_trigger_reboot_to_boot();
-        }
-    } else {
-        pressed = 0U;
+    if (tick_cb) {
+        tick_cb();
     }
 }
 
-static void board_init_gpio(void)
-{
-    GPIO_InitTypeDef gpio = { 0 };
-
-    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA | RCC_APB2Periph_GPIOB, ENABLE);
-
-    /*
-     * SWDIO/TMS: push pull and idle high.
-     * jtagtap.c never calls PIN_TMS_SWDIO_SET_OUT(), so JTAG needs this line to
-     * be a driven output already; an open-drain pin without a pull-up would
-     * float when driving high and break the JTAG reset sequence.
-     * swdptap.c switches the mode to input around each SWD turnaround.
-     */
-    GPIO_SetBits(PIN_TMS_GPIO_PORT, PIN_TMS_GPIO_PIN);
-    gpio.GPIO_Pin = PIN_TMS_GPIO_PIN;
-    gpio.GPIO_Speed = GPIO_Speed_50MHz;
-    gpio.GPIO_Mode = GPIO_Mode_Out_PP;
-    GPIO_Init(PIN_TMS_GPIO_PORT, &gpio);
-
-    /* SWCLK/TCK and TDI: push pull, idle high */
-    GPIO_SetBits(PIN_TCK_GPIO_PORT, PIN_TCK_GPIO_PIN);
-    gpio.GPIO_Pin = PIN_TCK_GPIO_PIN;
-    gpio.GPIO_Speed = GPIO_Speed_50MHz;
-    gpio.GPIO_Mode = GPIO_Mode_Out_PP;
-    GPIO_Init(PIN_TCK_GPIO_PORT, &gpio);
-
-    GPIO_SetBits(PIN_TDI_GPIO_PORT, PIN_TDI_GPIO_PIN);
-    gpio.GPIO_Pin = PIN_TDI_GPIO_PIN;
-    gpio.GPIO_Speed = GPIO_Speed_50MHz;
-    gpio.GPIO_Mode = GPIO_Mode_Out_PP;
-    GPIO_Init(PIN_TDI_GPIO_PORT, &gpio);
-
-    /* TDO: input with pull up */
-    gpio.GPIO_Pin = PIN_TDO_GPIO_PIN;
-    gpio.GPIO_Speed = GPIO_Speed_50MHz;
-    gpio.GPIO_Mode = GPIO_Mode_IPU;
-    GPIO_Init(PIN_TDO_GPIO_PORT, &gpio);
-
-    /* status LED: preload the off level before the pin becomes an output */
-    board_led_write(0U);
-    gpio.GPIO_Pin = PIN_LED_GPIO_PIN;
-    gpio.GPIO_Speed = GPIO_Speed_50MHz;
-    gpio.GPIO_Mode = GPIO_Mode_Out_PP;
-    GPIO_Init(PIN_LED_GPIO_PORT, &gpio);
-}
-
-static void usbhs_rcc_init(void)
-{
-    RCC_USBCLK48MConfig(RCC_USBCLK48MCLKSource_USBPHY);
-    RCC_USBHSPLLCLKConfig(RCC_HSBHSPLLCLKSource_HSE);
-    RCC_USBHSConfig(RCC_USBPLL_Div6);
-    RCC_USBHSPLLCKREFCLKConfig(RCC_USBHSPLLCKREFCLK_4M);
-    RCC_USBHSPHYPLLALIVEcmd(ENABLE);
-    RCC_AHBPeriphClockCmd(RCC_AHBPeriph_USBHS, ENABLE);
-}
-
-void board_init_usb(void)
-{
-    usbhs_rcc_init();
-    NVIC_EnableIRQ(USBHS_IRQn);
-}
-
-void board_led_write(uint8_t state)
-{
-    /*
-     * state != 0 means "LED on".  The hardware is active low (see
-     * PIN_LED_ACTIVE_LOW in jtag_port.h), so "on" is the pin driven low.
-     */
-    const uint32_t lit = (state != 0U) ? 1U : 0U;
-    const uint32_t low = PIN_LED_ACTIVE_LOW ? lit : !lit;
-
-    if (low) {
-        PIN_LED_GPIO_PORT->BCR = PIN_LED_GPIO_PIN;
-    } else {
-        PIN_LED_GPIO_PORT->BSHR = PIN_LED_GPIO_PIN;
-    }
-}
-
+/* -------------------------------------------------------------------------- */
+/* Bring-up                                                                   */
+/* -------------------------------------------------------------------------- */
 void board_init(void)
 {
     NVIC_PriorityGroupConfig(NVIC_PriorityGroup_2);
     SystemCoreClockUpdate();
     Delay_Init();
 
-    board_init_gpio();
-    board_init_usb();
-    board_init_systick();
+#if BOARD_HAS_LED
+    board_init_led();
+#endif
+#if BOARD_HAS_BOOT_BUTTON
     board_init_boot_button();
-}
+#endif
 
-/*
- * The CherryUSB low-level hook (usb_dc_low_level_init(uint8_t busid)) lives in
- * bmp_port/boot_usb_ch32v30x.c, next to the PHY/PLL recipe it needs.
- */
+    board_init_console();
+    board_init_systick();
+}

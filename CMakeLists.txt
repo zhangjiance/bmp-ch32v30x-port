@@ -15,7 +15,9 @@ cmake_minimum_required(VERSION 3.22)
 #   main.c                 application entry point
 #   bmp_port/              port layer + bmp_port/CMakeLists.txt, which lists the
 #                          port sources and the blackmagic core/target sources
-#   boards/<board>/        board BSP (pins live in bmp_port/jtag_port.h)
+#   boards/<board>/        board BSP: board_config.h (BOARD_* pins/features) +
+#                          board.c (primitives); the probe's SWD/JTAG pins live
+#                          in bmp_port/jtag_port.h
 #   shared/                boot_protocol.h, the bootloader <-> app contract
 #   linkfile/              application linker script (0x00008000, 96 KB)
 #   SDK/                   WCH ch32v30x peripheral library

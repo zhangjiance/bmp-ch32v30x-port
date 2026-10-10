@@ -37,8 +37,10 @@ shared/boot_protocol.h    bootloader/application contract (partition, BKP)
 | Target UART TX (USART3) | PB10 |
 | Target UART RX (USART3) | PB11 |
 
-nTRST / nSRST are not wired (empty implementations). The pin definitions live in
-`bmp_port/jtag_port.h`.
+nTRST / nSRST are not wired (empty implementations). The SWD/JTAG pin definitions
+live in `bmp_port/jtag_port.h`; the status LED and BOOT button are board pins
+(`BOARD_LED_*` / `BOARD_BOOT_*` in `boards/ch32v30x_bmp/board_config.h`) reached
+through the board primitives `board_led_write()` / `board_read_boot_pin()`.
 
 SWD/JTAG is **GPIO bit-banging only** (the `PIN_*` macros in
 `bmp_port/jtag_port.h`); there is no SPI acceleration path, so the timing stays
@@ -98,9 +100,10 @@ path is **DMA + interrupt driven** and never depends on the main loop:
   `bmp_port/boot_trigger_ch32v30x.c` (it survives `NVIC_SystemReset()`):
   - `dfu-util -e` (DFU_DETACH) calls `platform_request_boot()`
   - `monitor bootloader` from the GDB side
-  - holding the BOOT button (PA6): the 100 ms TIM3 interrupt in
-    `boards/ch32v30x_bmp/board.c` samples it, so it works while the main loop is
-    parked in `gdb_if_getchar()` waiting for a GDB command
+  - holding the BOOT button (PA6): the probe registers a 100 ms tick through
+    `board_timer_create()` (`bmp_port/platform.c`), which the board's TIM3
+    interrupt calls, so it works while the main loop is parked in
+    `gdb_if_getchar()` waiting for a GDB command
 
 ## Build
 
