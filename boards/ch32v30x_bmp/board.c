@@ -1,6 +1,8 @@
 #include "board.h"
 #include "ch32v30x.h"
 #include "debug.h"
+/* cur_target: the status LED only reports a GDB session once a target is attached */
+#include "gdb_main.h"
 #include "system_ch32v30x.h"
 #include "jtag_port.h"
 #include "boot_trigger_port.h"
@@ -85,10 +87,52 @@ static void board_init_boot_button(void)
 }
 
 /*
- * Samples the BOOT button from the timer interrupt: an ISR is the only place
- * that still runs while the main loop is blocked on the GDB endpoint.  The ISR
- * stays minimal (one GPIO read + a counter) so the bit-banged SWD/JTAG timing
- * only sees a very short, infrequent interruption.
+ * Status LED.
+ *
+ * The board has a single LED and it reports the GDB session:
+ *   - no target attached                     -> dark
+ *   - attached and stopped, which includes
+ *     while a GDB command is being executed   -> solid on
+ *   - attached and running                    -> blinking
+ * The BOOT button tick below drives it, which is why no extra timer or
+ * interrupt is needed.
+ */
+#define LED_BLINK_TICKS 1U /* timer ticks per toggle: 1 => 100 ms */
+
+static void board_led_tick(void)
+{
+    static uint32_t led_ticks;
+    static uint32_t led_on;
+
+    if (!cur_target) {
+        /* Nothing attached, the LED has nothing to report. */
+        led_ticks = 0U;
+        led_on = 0U;
+        board_led_write(0U);
+        return;
+    }
+
+    if (!running_status) {
+        /* Attached and stopped: solid on. */
+        led_ticks = 0U;
+        led_on = 1U;
+        board_led_write(1U);
+        return;
+    }
+
+    if (++led_ticks >= LED_BLINK_TICKS) {
+        led_ticks = 0U;
+        led_on = !led_on;
+        board_led_write((uint8_t)led_on);
+    }
+}
+
+/*
+ * Samples the BOOT button from the timer interrupt and ticks the status LED: an
+ * ISR is the only place that still runs while the main loop is blocked on the
+ * GDB endpoint.  The ISR stays minimal (a GPIO read, a counter and one LED
+ * write) so the bit-banged SWD/JTAG timing only sees a very short, infrequent
+ * interruption.
  */
 void TIM3_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
 void TIM3_IRQHandler(void)
@@ -99,6 +143,8 @@ void TIM3_IRQHandler(void)
         return;
     }
     TIM_ClearITPendingBit(TIM3, TIM_IT_Update);
+
+    board_led_tick();
 
     if (PIN_BOOT_PRESSED()) {
         if (++pressed >= BOOT_BUTTON_PRESS_TICKS) {
@@ -148,8 +194,8 @@ static void board_init_gpio(void)
     gpio.GPIO_Mode = GPIO_Mode_IPU;
     GPIO_Init(PIN_TDO_GPIO_PORT, &gpio);
 
-    /* status LED */
-    GPIO_ResetBits(PIN_LED_GPIO_PORT, PIN_LED_GPIO_PIN);
+    /* status LED: preload the off level before the pin becomes an output */
+    board_led_write(0U);
     gpio.GPIO_Pin = PIN_LED_GPIO_PIN;
     gpio.GPIO_Speed = GPIO_Speed_50MHz;
     gpio.GPIO_Mode = GPIO_Mode_Out_PP;
@@ -174,10 +220,17 @@ void board_init_usb(void)
 
 void board_led_write(uint8_t state)
 {
-    if (state) {
-        PIN_LED_GPIO_PORT->BSHR = PIN_LED_GPIO_PIN;
-    } else {
+    /*
+     * state != 0 means "LED on".  The hardware is active low (see
+     * PIN_LED_ACTIVE_LOW in jtag_port.h), so "on" is the pin driven low.
+     */
+    const uint32_t lit = (state != 0U) ? 1U : 0U;
+    const uint32_t low = PIN_LED_ACTIVE_LOW ? lit : !lit;
+
+    if (low) {
         PIN_LED_GPIO_PORT->BCR = PIN_LED_GPIO_PIN;
+    } else {
+        PIN_LED_GPIO_PORT->BSHR = PIN_LED_GPIO_PIN;
     }
 }
 

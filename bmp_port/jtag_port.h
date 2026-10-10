@@ -9,7 +9,7 @@
  *   PB15 -> SWDIO/TMS   (driven open-drain, see board.c)
  *   PB13 -> TDI
  *   PB12 -> TDO
- *   PA8  -> status LED
+ *   PA5  -> status LED
  *   PA6  -> BOOT button (to GND, active low)
  */
 #ifndef __JTAG_PORT_H__
@@ -42,8 +42,14 @@
 #define PIN_TDO_GPIO_PORT GPIOB
 #define PIN_TDO_GPIO_PIN  GPIO_Pin_12
 
-#define PIN_LED_GPIO_PORT GPIOA
-#define PIN_LED_GPIO_PIN  GPIO_Pin_8
+/*
+ * Status LED: PA5 sits on the cathode side of the LED, whose anode goes to 3V3
+ * through its series resistor, so the pin sinks the current - driving it low
+ * lights the LED and driving it high turns it off.
+ */
+#define PIN_LED_GPIO_PORT  GPIOA
+#define PIN_LED_GPIO_PIN   GPIO_Pin_5
+#define PIN_LED_ACTIVE_LOW 1
 
 /* BOOT button: PA6 to GND with the internal pull-up, so pressed reads low. */
 #define PIN_BOOT_GPIO_PORT       GPIOA
@@ -161,20 +167,13 @@ __STATIC_FORCEINLINE void PIN_nRESET_OUT(uint32_t bit)
     (void)bit;
 }
 
-/* ---------------- LED ---------------- */
-__STATIC_INLINE void LED_CONNECTED_OUT(uint32_t bit)
-{
-    if (bit) {
-        PIN_LED_GPIO_PORT->BSHR = PIN_LED_GPIO_PIN;
-    } else {
-        PIN_LED_GPIO_PORT->BCR = PIN_LED_GPIO_PIN;
-    }
-}
-
-__STATIC_INLINE void LED_RUNNING_OUT(uint32_t bit)
-{
-    (void)bit;
-}
+/*
+ * ---------------- LED ----------------
+ * The single status LED is owned by the board layer - board_led_write() in
+ * boards/ch32v30x_bmp/board.c, driven from the 100 ms timer so it is dark
+ * without an attached target, solid while one is stopped and blinking while it
+ * runs.  Only the pin definition and PIN_LED_ACTIVE_LOW above are needed here.
+ */
 
 __STATIC_INLINE uint32_t TIMESTAMP_GET(void)
 {

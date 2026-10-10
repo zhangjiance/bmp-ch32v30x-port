@@ -12,7 +12,7 @@
  *   PB15 -> SWDIO / TMS   (push-pull output, switched to input for SWD reads)
  *   PB13 -> TDI
  *   PB12 -> TDO
- *   PA8  -> status LED
+ *   PA5  -> status LED
  *   PB10 -> target UART TX (USART3)
  *   PB11 -> target UART RX (USART3)
  */

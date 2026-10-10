@@ -30,7 +30,7 @@ shared/boot_protocol.h    boot 与 app 的约定（分区、BKP 触发）
 | SWDIO / TMS | PB15 |
 | TDI | PB13 |
 | TDO | PB12 |
-| 状态 LED | PA8 |
+| 状态 LED（低有效） | PA5 |
 | BOOT 按键（接 GND，低有效） | PA6 |
 | 目标串口 TX (USART3) | PB10 |
 | 目标串口 RX (USART3) | PB11 |

@@ -13,7 +13,7 @@ void board_init(void);
 /* USBHS clock + interrupt, called from board_init() */
 void board_init_usb(void);
 
-/* status LED (PA8) */
+/* status LED (PA5, active low) */
 void board_led_write(uint8_t state);
 
 uint32_t board_time_ms(void);

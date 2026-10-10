@@ -32,7 +32,7 @@ shared/boot_protocol.h    bootloader/application contract (partition, BKP)
 | SWDIO / TMS | PB15 |
 | TDI | PB13 |
 | TDO | PB12 |
-| Status LED | PA8 |
+| Status LED (active low) | PA5 |
 | BOOT button (to GND, active low) | PA6 |
 | Target UART TX (USART3) | PB10 |
 | Target UART RX (USART3) | PB11 |
