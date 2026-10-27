@@ -27,7 +27,7 @@ set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 set(CMAKE_C_FLAGS_DEBUG "-Os -g3")
 
 if(BMP_SLIM)
-    # The slim image is size constrained (96 KB application partition); -Oz +
+    # The slim image is size constrained (116 KB application partition); -Oz +
     # LTO is worth ~6.5 KB.  LTO is safe here: usb_dc_low_level_init() is only
     # *declared* by the CherryUSB driver and defined once, strongly, in
     # bmp_port/boot_usb_ch32v30xfun.c.

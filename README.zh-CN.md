@@ -3,8 +3,8 @@
 [English](README.md) | [简体中文](README.zh-CN.md)
 
 Black Magic Probe（BMP）在 CH32V30x 上的端口工程，使用其高速 USB 设备控制器（USBHS）。
-固件作为 DFU bootloader 的**应用程序镜像**运行：bootloader 占前 32 KB，本应用从
-`0x08008000` 开始。
+固件作为 DFU bootloader 的**应用程序镜像**运行：bootloader 占前 12 KB，本应用从
+`0x08003000` 开始。
 
 ```
 CMakeLists.txt            顶层：工具链、板级选择、链接、objcopy
@@ -18,7 +18,7 @@ third_party_components/
   CherryUSB/              子仓：USB 协议栈 + CH32V30x USBHS 端口
   ch32fun/                子仓：启动、时钟树、中断向量表、寄存器头
 boards/ch32v30x_ob/      板级 BSP
-linkfile/flash_dfu.ld     应用链接脚本（0x00008000，96K）
+linkfile/flash_dfu.ld     应用链接脚本（0x00003000，116K）
 shared/boot_protocol.h    boot 与 app 的约定（分区、BKP 触发）
 docs/                     开发笔记（问题记录、设计笔记）
 ```
@@ -86,7 +86,7 @@ SWD/JTAG 只做 **GPIO 位操作**（`bmp_port/jtag_port.h` 提供 `PIN_*` 宏�
 
 ## 与 bootloader 配合
 
-- 应用链接在 `0x00008000`（`linkfile/flash_dfu.ld`，96 KB），与
+- 应用链接在 `0x00003000`（`linkfile/flash_dfu.ld`，116 KB），与
   `shared/boot_protocol.h` 里的 `BOOT_APP_OFFSET` 一致。
 - 回到 bootloader 有三条路径，都走 `bmp_port/boot_trigger_ch32v30x.c` 的
   BKP 握手（跨 `NVIC_SystemReset()` 保留）：
@@ -107,12 +107,12 @@ cmake --build --preset ch32v30x_ob-release
 
 ## 烧录 / 使用
 
-1. 先烧配套的 DFU bootloader（它自带 32 KB 区，起始 `0x08000000`）。
+1. 先烧配套的 DFU bootloader（它自带 12 KB 区，起始 `0x08000000`）。
 2. 烧写本应用。因为本应用自带 **DFU runtime 接口**（接口 4），下面这**同一条命令在两种
    状态下都可用**，不需要先判断设备当前跑的是哪一份固件：
 
    ```sh
-   dfu-util -d 1a86 -s 0x08008000:leave -D build/ch32v30x_ob-release/bmp-ch32v30x-port.bin
+   dfu-util -d 1a86 -s 0x08003000:leave -D build/ch32v30x_ob-release/bmp-ch32v30x-port.bin
    ```
 
    - **设备已经在 bootloader 的 DFU 模式**（按住 BOOT 上电进入）→ 直接下载。
@@ -147,5 +147,5 @@ cmake --build --preset ch32v30x_ob-release
 - 子仓（都在 `third_party_components/` 下）：`blackmagic`
   （`https://codeberg.org/mTOTm/blackmagic.git`，`dev/jiance.zhang/main_test`）与
   `CherryUSB`（`ch32v30x-usbhs`，含 CH32V30x USBHS 设备控制器端口）。
-- target 驱动清单在 `bmp_port/CMakeLists.txt` 里按需裁剪（应用分区 96 KB），
+- target 驱动清单在 `bmp_port/CMakeLists.txt` 里按需裁剪（应用分区 116 KB），
   需要更多芯片支持时往里加文件即可。

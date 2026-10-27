@@ -12,13 +12,13 @@ MEMORY
 */
 
 /* Application partition behind the DFU bootloader.
-   The bootloader owns the first 32 KB (0x0000-0x7FFF, app start 0x00008000 as
-   configured by BOOT_APP_OFFSET in shared/boot_protocol.h) and jumps here, so .init
-   .vector table now live at 0x8000. The startup code does
-   "la t0, _vector_base; csrw mtvec, t0", so the trap vector base follows the
-   link address automatically - no startup change is needed.
-   The remaining 96K (128K - 32K) is available to the application. */
-	FLASH (rx) : ORIGIN = 0x00008000, LENGTH = 96K
+   The bootloader owns the first 12 KB (0x0000-0x2FFF, app start 0x00003000 as
+   configured by BOOT_APP_OFFSET in shared/boot_protocol.h) and jumps here, so
+   .init and ch32fun's vector table live at 0x3000.  ch32fun sets mtvec from the
+   InterruptVector address, so the trap vector base follows the link address
+   automatically.
+   The remaining 116K (128K - 12K) is available to the application. */
+	FLASH (rx) : ORIGIN = 0x00003000, LENGTH = 116K
 	RAM (xrw) : ORIGIN = 0x20000000, LENGTH = 32K
 
     

@@ -4,8 +4,8 @@
 
 Black Magic Probe (BMP) ported to the CH32V30x, driving its high-speed USB
 device controller (USBHS). The firmware is built as the **application image** of
-a DFU bootloader: the bootloader owns the first 32 KB of flash and this
-application starts at `0x08008000`.
+a DFU bootloader: the bootloader owns the first 12 KB of flash and this
+application starts at `0x08003000`.
 
 ```
 CMakeLists.txt            top level: toolchain, board selection, link, objcopy
@@ -20,7 +20,7 @@ third_party_components/
   CherryUSB/              submodule: USB stack + CH32V30x USBHS port
   ch32fun/                submodule: startup, clock tree, vectors, registers
 boards/ch32v30x_ob/      board BSP
-linkfile/flash_dfu.ld     application linker script (0x00008000, 96K)
+linkfile/flash_dfu.ld     application linker script (0x00003000, 116K)
 shared/boot_protocol.h    bootloader/application contract (partition, BKP)
 docs/                     development notes (problem records, design notes)
 ```
@@ -99,7 +99,7 @@ loop:
 
 ## Bootloader integration
 
-- The application links at `0x00008000` (`linkfile/flash_dfu.ld`, 96 KB), matching
+- The application links at `0x00003000` (`linkfile/flash_dfu.ld`, 116 KB), matching
   `BOOT_APP_OFFSET` in `shared/boot_protocol.h`.
 - Three paths return to the bootloader, all going through the BKP handshake in
   `bmp_port/boot_trigger_ch32v30x.c` (it survives `NVIC_SystemReset()`):
@@ -121,14 +121,14 @@ Artifacts: `build/ch32v30x_ob-release/bmp-ch32v30x-port.{elf,hex,bin}`.
 
 ## Flashing / usage
 
-1. Flash a matching DFU bootloader first (it owns its own 32 KB region at
+1. Flash a matching DFU bootloader first (it owns its own 12 KB region at
    `0x08000000`).
 2. Write this application. Because it exposes a **DFU runtime interface** (interface 4),
    the **same single command works in both states** - you never have to find out which
    firmware the device is running first:
 
    ```sh
-   dfu-util -d 1a86 -s 0x08008000:leave -D build/ch32v30x_ob-release/bmp-ch32v30x-port.bin
+   dfu-util -d 1a86 -s 0x08003000:leave -D build/ch32v30x_ob-release/bmp-ch32v30x-port.bin
    ```
 
    - **Device already in the bootloader's DFU mode** (entered by holding BOOT while
@@ -169,5 +169,5 @@ This README is the engineering overview only; the reasoning lives in the notes:
   (`https://codeberg.org/mTOTm/blackmagic.git`, `dev/jiance.zhang/main_test`) and
   `CherryUSB` (`ch32v30x-usbhs`, containing the CH32V30x USBHS device controller
   port).
-- The target driver list is trimmed in `bmp_port/CMakeLists.txt` to fit the 96 KB
+- The target driver list is trimmed in `bmp_port/CMakeLists.txt` to fit the 116 KB
   application partition; add files there to support more chips.
