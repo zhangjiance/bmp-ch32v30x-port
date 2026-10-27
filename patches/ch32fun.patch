@@ -1,0 +1,25 @@
+diff -Nur a/ch32fun/ch32fun.h b/ch32fun/ch32fun.h
+--- a/ch32fun/ch32fun.h	2026-10-27 17:02:10.973333717 +0800
++++ b/ch32fun/ch32fun.h	2026-10-27 17:02:11.028302985 +0800
+@@ -845,6 +845,13 @@
+ #endif
+ 
+ #ifndef __ASSEMBLER__
++/*
++ * newlib already provides jmp_buf/setjmp/longjmp (<setjmp.h>).  Its jmp_buf is
++ * larger than the one below (38 vs 14 long longs on rv32), so a second
++ * definition here makes every translation unit that includes both headers fail
++ * with "conflicting types for 'jmp_buf'".  FUNCONF_NO_JMP_BUF keeps newlib's.
++ */
++#ifndef FUNCONF_NO_JMP_BUF
+ #ifdef _JBLEN
+ #ifdef _JBTYPE
+ typedef _JBTYPE jmp_buf[_JBLEN];
+@@ -855,6 +862,7 @@
+ 
+ int setjmp( jmp_buf env );
+ void longjmp( jmp_buf env, int val );
++#endif // FUNCONF_NO_JMP_BUF
+ #endif
+ 
+ #endif // defined(__riscv) || defined(__riscv__) || defined( CH32V003FUN_BASE )

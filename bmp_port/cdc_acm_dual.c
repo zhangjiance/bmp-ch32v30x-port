@@ -25,7 +25,11 @@
 #include "usbd_cdc_acm.h"
 #include "usb_config.h"
 
+#if defined(BMP_USE_CH32FUN)
+#include "ch32fun.h" /* NVIC_DisableIRQ()/USBHS_IRQn for the GDB pipe locking */
+#else
 #include "ch32v30x.h" /* NVIC_DisableIRQ()/USBHS_IRQn for the GDB pipe locking */
+#endif
 
 #include "board.h"
 #include "general.h" /* platform_support.h requires this to be included first */

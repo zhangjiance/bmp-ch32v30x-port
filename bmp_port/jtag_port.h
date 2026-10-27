@@ -29,8 +29,12 @@
 #ifndef __JTAG_PORT_H__
 #define __JTAG_PORT_H__
 
+#if defined(BMP_USE_CH32FUN)
+#include "ch32fun.h"
+#else
 #include "ch32v30x.h"
 #include "ch32v30x_gpio.h"
+#endif
 #include "timing.h"
 
 #ifndef __STATIC_INLINE
@@ -42,6 +46,23 @@
 #ifndef __WEAK
 #define __WEAK __attribute__((weak))
 #endif
+
+/* CFGLR/CFGHR values, one nibble per pin (same layout for both backends). */
+#define PIN_GPIO_CFG_OUT_PP_50MHZ 0x3U
+#define PIN_GPIO_CFG_IN_PUPD      0x8U
+
+/*
+ * Program one pin of a WCH GPIO port: four configuration bits, CFGLR for pins
+ * 0-7 and CFGHR for 8-15.  `pin` is a GPIO_Pin_x mask.
+ */
+__STATIC_FORCEINLINE void PIN_GPIO_MODE(GPIO_TypeDef *const port, const uint16_t pin, const uint32_t mode)
+{
+    const uint32_t index = (uint32_t)__builtin_ctz((uint32_t)pin);
+    volatile uint32_t *const reg = (index < 8U) ? &port->CFGLR : &port->CFGHR;
+    const uint32_t shift = 4U * (index & 7U);
+
+    *reg = (*reg & ~(0xFU << shift)) | (mode << shift);
+}
 
 /* Configure the SWD/JTAG pins (PB12/PB13/PB14/PB15) as outputs, idle high. */
 void jtag_port_init(void);
@@ -102,20 +123,12 @@ __STATIC_FORCEINLINE void PIN_TMS_SWDIO_OUT(const uint32_t bit)
  */
 __STATIC_FORCEINLINE void PIN_TMS_SWDIO_SET_OUT(void)
 {
-    GPIO_InitTypeDef gpio = { 0 };
-    gpio.GPIO_Pin = PIN_TMS_GPIO_PIN;
-    gpio.GPIO_Speed = GPIO_Speed_50MHz;
-    gpio.GPIO_Mode = GPIO_Mode_Out_PP;
-    GPIO_Init(PIN_TMS_GPIO_PORT, &gpio);
+    PIN_GPIO_MODE(PIN_TMS_GPIO_PORT, PIN_TMS_GPIO_PIN, PIN_GPIO_CFG_OUT_PP_50MHZ);
 }
 
 __STATIC_FORCEINLINE void PIN_TMS_SWDIO_SET_IN(void)
 {
-    GPIO_InitTypeDef gpio = { 0 };
-    gpio.GPIO_Pin = PIN_TMS_GPIO_PIN;
-    gpio.GPIO_Speed = GPIO_Speed_50MHz;
-    gpio.GPIO_Mode = GPIO_Mode_IPU;
-    GPIO_Init(PIN_TMS_GPIO_PORT, &gpio);
+    PIN_GPIO_MODE(PIN_TMS_GPIO_PORT, PIN_TMS_GPIO_PIN, PIN_GPIO_CFG_IN_PUPD);
 }
 
 /* ---------------- TDI ---------------- */

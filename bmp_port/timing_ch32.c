@@ -10,7 +10,14 @@
 #include "general.h"
 #include "platform.h"
 #include "board.h"
+
+#if defined(BMP_USE_CH32FUN)
+#include "ch32fun.h"
+#define BMP_SYSCLK FUNCONF_SYSTEM_CORE_CLOCK
+#else
 #include "system_ch32v30x.h"
+#define BMP_SYSCLK SystemCoreClock
+#endif
 
 /*
  * SWD/JTAG bit-bang clock.
@@ -97,7 +104,7 @@ void platform_max_frequency_set(const uint32_t frequency)
      * is not pulled in: the product would overflow 32 bits above ~268 MHz,
      * and everything beyond that point is inside this early-out anyway.
      */
-    if (requested >= (SystemCoreClock + USED_SWD_CYCLES - 1U) / USED_SWD_CYCLES) {
+    if (requested >= (BMP_SYSCLK + USED_SWD_CYCLES - 1U) / USED_SWD_CYCLES) {
         target_clk_divider = UINT32_MAX;
         return;
     }
@@ -107,19 +114,19 @@ void platform_max_frequency_set(const uint32_t frequency)
      * so invert that for the requested frequency.  Past the early-out both
      * products fit in 32 bits: the numerator is below SystemCoreClock, and
      * 2 * CYCLES_PER_CNT * requested is bounded by
-     * 2 * CYCLES_PER_CNT * SystemCoreClock / USED_SWD_CYCLES (54 MHz at
+     * 2 * CYCLES_PER_CNT * BMP_SYSCLK / USED_SWD_CYCLES (54 MHz at
      * 144 MHz), so no 64-bit arithmetic is needed.
      */
     const uint32_t divider =
-        (SystemCoreClock - USED_SWD_CYCLES * requested) / (2U * CYCLES_PER_CNT * requested);
+        (BMP_SYSCLK - USED_SWD_CYCLES * requested) / (2U * CYCLES_PER_CNT * requested);
     target_clk_divider = divider;
 }
 
 uint32_t platform_max_frequency_get(void)
 {
     if (target_clk_divider == UINT32_MAX)
-        return SystemCoreClock / USED_SWD_CYCLES;
-    /* target_clk_divider is bounded by SystemCoreClock / (2 * CYCLES_PER_CNT),
+        return BMP_SYSCLK / USED_SWD_CYCLES;
+    /* target_clk_divider is bounded by BMP_SYSCLK / (2 * CYCLES_PER_CNT),
      * so the divisor stays below SystemCoreClock + 1 and fits in 32 bits. */
-    return SystemCoreClock / (USED_SWD_CYCLES + 2U * CYCLES_PER_CNT * target_clk_divider);
+    return BMP_SYSCLK / (USED_SWD_CYCLES + 2U * CYCLES_PER_CNT * target_clk_divider);
 }
