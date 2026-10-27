@@ -5,6 +5,7 @@
  */
 
 #include "stdio.h"
+#include "ch32fun.h"
 #include "board.h"
 #include "usb_config.h"
 
@@ -25,6 +26,31 @@
 #endif
 
 extern void cdc_acm_init(uint8_t busid, uint32_t reg_base);
+
+/*
+ * Clock hand-over from the bootloader.
+ *
+ * ch32fun's SystemInit() rebuilds the tree by *assigning* RCC->CTLR, and its
+ * first write clears PLLON.  From a hardware reset that is harmless: SYSCLK is
+ * HSI, and the RM protects HSION while it is the system clock.  This
+ * application, however, is entered from the bootloader with SYSCLK already on
+ * the PLL, so that write would stop the very clock the core is running on and
+ * the chip would die on the first instruction of SystemInit().
+ *
+ * Do what the WCH startup did: switch back to HSI first, then let SystemInit()
+ * build the tree up again.  When the application starts from a reset instead
+ * (NVIC_SystemReset resets RCC), this is a no-op.
+ */
+static void clock_fallback_to_hsi(void)
+{
+    RCC->CTLR |= RCC_HSION;
+    while ((RCC->CTLR & RCC_HSIRDY) == 0U) {
+    }
+
+    RCC->CFGR0 &= ~RCC_SW;                 /* SW = HSI           */
+    while ((RCC->CFGR0 & RCC_SWS) != 0U) { /* wait for SWS = HSI */
+    }
+}
 
 static void bmp_poll_loop(void)
 {
@@ -55,6 +81,12 @@ static void bmp_poll_loop(void)
 
 int main(void)
 {
+    /* ch32fun's handle_reset() jumps straight to main(); SystemInit() is what
+     * brings up the clock tree (HSE x6 = 144 MHz) and the USB/PHY references.
+     * It must run after the bootloader's PLL is off the system clock. */
+    clock_fallback_to_hsi();
+    SystemInit();
+
     board_init();
     /* Probe-owned SWD/JTAG pins; the board layer does not know about them. */
     jtag_port_init();
