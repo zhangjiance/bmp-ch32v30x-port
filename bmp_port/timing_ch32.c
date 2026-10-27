@@ -11,13 +11,8 @@
 #include "platform.h"
 #include "board.h"
 
-#if defined(BMP_USE_CH32FUN)
 #include "ch32fun.h"
 #define BMP_SYSCLK FUNCONF_SYSTEM_CORE_CLOCK
-#else
-#include "system_ch32v30x.h"
-#define BMP_SYSCLK SystemCoreClock
-#endif
 
 /*
  * SWD/JTAG bit-bang clock.

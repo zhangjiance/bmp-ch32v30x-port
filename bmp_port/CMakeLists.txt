@@ -7,7 +7,7 @@
 # CMakeLists.txt creates the executable (from main.c), calls
 # add_subdirectory(bmp_port) and does the final link and objcopy, so this file
 # relies on these variables being set there:
-#   PROJECT_TARGET, BOARD_DIR, SDK_ROOT, CHERRYUSB_ROOT,
+#   PROJECT_TARGET, BOARD_DIR, CH32FUN_ROOT, CHERRYUSB_ROOT,
 #   cherryusb_srcs, cherryusb_incs
 #
 # Layering:
@@ -59,34 +59,6 @@ endif()
 set(BMP_CORE_ROOT  "${BMP_ROOT}/src")
 
 # ------------------------------------------------------------------------------
-# WCH ch32v30x peripheral library + startup
-#
-# Only built for the WCH backend; the ch32fun backend brings its own startup,
-# clock tree and register headers.
-# ------------------------------------------------------------------------------
-if(NOT BMP_CH32FUN)
-    add_library(ch32v30x_lib STATIC)
-
-    target_include_directories(ch32v30x_lib PUBLIC
-        ${SDK_ROOT}/Core
-        ${SDK_ROOT}/Debug
-        ${SDK_ROOT}/Peripheral/inc
-        ${BMP_PORT_DIR}
-    )
-
-    file(GLOB SDK_CORE_SRC   ${SDK_ROOT}/Core/*.c)
-    file(GLOB SDK_DEBUG_SRC  ${SDK_ROOT}/Debug/*.c)
-    file(GLOB SDK_DEVICE_SRC ${SDK_ROOT}/Peripheral/src/*.c)
-
-    target_sources(ch32v30x_lib PRIVATE
-        ${SDK_CORE_SRC}
-        ${SDK_DEBUG_SRC}
-        ${SDK_DEVICE_SRC}
-        ${SDK_ROOT}/Startup/startup_ch32v30x_D8C.S
-    )
-endif()
-
-# ------------------------------------------------------------------------------
 # Port layer
 #
 # The CH32V30x USBHS device controller comes from our CherryUSB fork (branch
@@ -96,55 +68,33 @@ endif()
 # SWD/JTAG are pure GPIO bit banging - no peripheral acceleration - so the
 # timing is fully deterministic; only jtag_port.h is CH32V30x specific.
 #
-# The *_ch32fun.c files are the register-level counterparts of the files they
-# replace; both backends expose the same board/platform interfaces.
+# ch32fun.c brings the startup, clock tree, vector table and core intrinsics.
 # ------------------------------------------------------------------------------
-if(BMP_CH32FUN)
-    set(bmp_port_srcs
-        # platform: LED, boot hand-shake, target clock output control
-        ${BMP_PORT_DIR}/platform.c
-        ${BMP_PORT_DIR}/timing_ch32.c
-        # GPIO bit banged debug interfaces
-        ${BMP_PORT_DIR}/jtag_port.c
-        ${BMP_PORT_DIR}/jtagtap.c
-        # USB: composite CDC ACM (GDB server + target UART) and the target UART
-        ${BMP_PORT_DIR}/cdc_acm_dual.c
-        ${BMP_PORT_DIR}/aux_serial_ch32fun.c
-        ${CHERRYUSB_ROOT}/port/wch/ch32v30x/usb_dc_ch32v30x.c
-        # bootloader integration: BKP hand-shake and reset into the bootloader
-        ${BMP_PORT_DIR}/boot_trigger_ch32v30xfun.c
-        ${BMP_PORT_DIR}/boot_usb_ch32v30xfun.c
-        # exception handlers
-        ${BMP_PORT_DIR}/ch32v30x_it_ch32fun.c
-        # startup, clock tree, vector table and core intrinsics
-        ${CH32FUN_ROOT}/ch32fun/ch32fun.c
-    )
+set(bmp_port_srcs
+    # platform: LED, boot hand-shake, target clock output control
+    ${BMP_PORT_DIR}/platform.c
+    ${BMP_PORT_DIR}/timing_ch32.c
+    # GPIO bit banged debug interfaces
+    ${BMP_PORT_DIR}/jtag_port.c
+    ${BMP_PORT_DIR}/jtagtap.c
+    # USB: composite CDC ACM (GDB server + target UART) and the target UART
+    ${BMP_PORT_DIR}/cdc_acm_dual.c
+    ${BMP_PORT_DIR}/aux_serial.c
+    ${CHERRYUSB_ROOT}/port/wch/ch32v30x/usb_dc_ch32v30x.c
+    # bootloader integration: BKP hand-shake and reset into the bootloader
+    ${BMP_PORT_DIR}/boot_trigger_ch32v30x.c
+    ${BMP_PORT_DIR}/boot_usb_ch32v30x.c
+    # exception handlers
+    ${BMP_PORT_DIR}/ch32v30x_it.c
+    # startup, clock tree, vector table and core intrinsics
+    ${CH32FUN_ROOT}/ch32fun/ch32fun.c
+)
 
-    # ch32fun ships its own small printf family.  blackmagic's format strings
-    # need the newlib formatter (%zu, %llx, %.*s, %-25s ...), so rename the
-    # ch32fun ones out of the way and let the library symbols win.
-    set_source_files_properties(${CH32FUN_ROOT}/ch32fun/ch32fun.c PROPERTIES
-        COMPILE_OPTIONS "-Dprintf=ch32fun_printf;-Dvprintf=ch32fun_vprintf;-Dsnprintf=ch32fun_snprintf;-Dsprintf=ch32fun_sprintf")
-else()
-    set(bmp_port_srcs
-        # platform: LED, boot hand-shake, target clock output control
-        ${BMP_PORT_DIR}/platform.c
-        ${BMP_PORT_DIR}/timing_ch32.c
-        # GPIO bit banged debug interfaces
-        ${BMP_PORT_DIR}/jtag_port.c
-        ${BMP_PORT_DIR}/jtagtap.c
-        # USB: composite CDC ACM (GDB server + target UART) and the target UART
-        ${BMP_PORT_DIR}/cdc_acm_dual.c
-        ${BMP_PORT_DIR}/aux_serial.c
-        ${CHERRYUSB_ROOT}/port/wch/ch32v30x/usb_dc_ch32v30x.c
-        # bootloader integration: BKP hand-shake and reset into the bootloader
-        ${BMP_PORT_DIR}/boot_trigger_ch32v30x.c
-        ${BMP_PORT_DIR}/boot_usb_ch32v30x.c
-        # MCU glue: WCH system (clocks) and the interrupt vector implementations
-        ${BMP_PORT_DIR}/system_ch32v30x.c
-        ${BMP_PORT_DIR}/ch32v30x_it.c
-    )
-endif()
+# ch32fun ships its own small printf family.  blackmagic's format strings need
+# the newlib formatter (%zu, %llx, %.*s, %-25s ...), so rename the ch32fun ones
+# out of the way and let the library symbols win.
+set_source_files_properties(${CH32FUN_ROOT}/ch32fun/ch32fun.c PROPERTIES
+    COMPILE_OPTIONS "-Dprintf=ch32fun_printf;-Dvprintf=ch32fun_vprintf;-Dsnprintf=ch32fun_snprintf;-Dsprintf=ch32fun_sprintf")
 
 if(NOT BMP_SLIM)
     # SWD bit banging is only part of the full build; the slim build keeps JTAG
@@ -250,11 +200,7 @@ endif()
 # ------------------------------------------------------------------------------
 # Application
 # ------------------------------------------------------------------------------
-if(BMP_CH32FUN)
-    set(board_srcs ${BOARD_DIR}/board_ch32fun.c)
-else()
-    set(board_srcs ${BOARD_DIR}/board.c)
-endif()
+set(board_srcs ${BOARD_DIR}/board.c)
 
 target_sources(${PROJECT_TARGET} PRIVATE
     ${cherryusb_srcs}
@@ -273,9 +219,7 @@ target_include_directories(${PROJECT_TARGET} PRIVATE
     ${BOARD_DIR}
 )
 
-if(BMP_CH32FUN)
-    target_include_directories(${PROJECT_TARGET} PRIVATE ${CH32FUN_ROOT}/ch32fun)
-endif()
+target_include_directories(${PROJECT_TARGET} PRIVATE ${CH32FUN_ROOT}/ch32fun)
 
 # Black magic debug configuration: no libopencm3 (CherryUSB provides USB), no
 # RTT, 4 byte pointers (rv32), accelerated RISC-V access and no interrupt
@@ -300,8 +244,4 @@ target_compile_definitions(${PROJECT_TARGET} PRIVATE
     -DDISABLE_IRQ_PREEMPTIVE=1
 )
 
-if(BMP_CH32FUN)
-    target_compile_definitions(${PROJECT_TARGET} PRIVATE -DBMP_USE_CH32FUN=1)
-else()
-    target_link_libraries(${PROJECT_TARGET} ch32v30x_lib)
-endif()
+

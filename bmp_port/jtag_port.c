@@ -5,8 +5,7 @@
  * GPIO configuration needs code, and it belongs to the probe (the board layer,
  * boards/ch32v30x_ob/, knows nothing about SWD/JTAG).
  *
- * Register level on purpose: the same code serves the WCH SDK and the ch32fun
- * backend, and the CFGLR nibbles are all that is needed.
+ * Register level on purpose: the CFGLR nibbles are all that is needed.
  */
 #include "jtag_port.h"
 

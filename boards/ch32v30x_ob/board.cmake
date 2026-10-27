@@ -6,27 +6,23 @@
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
-# HSE crystal
+# Crystal and clock tree
 #
-# The WCH library defaults HSE_VALUE to 8 MHz, and every frequency this firmware
-# computes is derived from that single number: SYSCLK, HCLK and PCLK1 in
-# RCC_GetClocksFreq() / SystemCoreClockUpdate(), and from those the USART baud
-# rate divisor, Delay_Init(), board_time_ms() and platform_delay().
+# ch32fun derives the PLL setup, every delay, every baud rate and the USB PHY
+# reference from these three numbers, and they describe the hardware fitted on
+# the board - which is why they live here and not in funconfig.h (that file
+# keeps the ch32fun behaviour switches and repeats these values only as
+# fallbacks).
 #
-# This board does not carry the 8 MHz the library assumes.  Its system clock
-# setup (SetSysClockTo48_HSE(), the project's system_ch32v30x.c) runs the main
-# PLL at HSE * 6, so with this 24 MHz crystal the real SYSCLK is 3x what those
-# functions report.  That is exactly the 3x the target UART was out by: a host
-# request for 115200 left BRR at 0x0D0, whose real rate was 72000000 / 208 =
-# 346153 baud rather than the 115384 the firmware printed, so PB11 decoded a
-# genuine 115200 target stream three samples per bit.
+#     HSE 24 MHz  ->  PLL x6  ->  SYSCLK = HCLK = 144 MHz, APB1 = HCLK/2 = 72 MHz
 #
-# Only products of HSE with the decoded PLL multiplier and the prescalers are
-# ever used, so correcting the assumed HSE is enough to make every derived
-# number right; the clock tree itself is untouched.
-#
-# Confirm this against the crystal fitted on the board: with a real 24 MHz HSE
-# the divisor for 115200 becomes 0x271 and the aux port reports
-# "actual=115200 pclk1=72000000".
+# A board with a different crystal changes HSE_VALUE here, and the two derived
+# numbers with it.  Sanity check after such a change: 115200 baud on
+# PCLK1 = 72 MHz is BRR 0x271, and board_time_ms() must count real
+# milliseconds.
 # ------------------------------------------------------------------------------
-add_compile_definitions(HSE_VALUE=24000000)
+add_compile_definitions(
+    HSE_VALUE=24000000
+    FUNCONF_PLL_MULTIPLIER=6
+    FUNCONF_SYSTEM_CORE_CLOCK=144000000
+)

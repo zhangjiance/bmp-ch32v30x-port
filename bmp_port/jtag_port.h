@@ -29,12 +29,7 @@
 #ifndef __JTAG_PORT_H__
 #define __JTAG_PORT_H__
 
-#if defined(BMP_USE_CH32FUN)
 #include "ch32fun.h"
-#else
-#include "ch32v30x.h"
-#include "ch32v30x_gpio.h"
-#endif
 #include "timing.h"
 
 #ifndef __STATIC_INLINE

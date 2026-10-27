@@ -29,8 +29,8 @@ extern "C" {
 void board_init(void);
 
 /* Free running millisecond time base, derived from SysTick.  The board owns
- * SysTick, so the WCH SDK Delay_Ms()/Delay_Us() (which reconfigure it) must not
- * be used: call board_delay_ms() instead. */
+ * SysTick, so ch32fun's DelaySysTick() (which reconfigures it) must not be
+ * used: call board_delay_ms() instead. */
 uint32_t board_time_ms(void);
 void board_delay_ms(uint32_t ms);
 

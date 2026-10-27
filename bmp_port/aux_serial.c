@@ -1,11 +1,12 @@
 /*
- * aux_serial.c
+ * aux_serial_ch32fun.c
  *
- * Target UART for the CH32V30x BMP port: the board's application UART
- * (BOARD_APP_UART*, see boards/ch32v30x_ob/board_config.h), the physical side
- * of the second CDC function.  The board layer owns the hardware - instance,
- * pins and clocks, all through board_init_app_uart() - while this file owns the
- * line format and the DMA data path on top of it.
+ * Target UART for the CH32V30x BMP port, register level: the board's
+ * application UART (BOARD_APP_UART*, see
+ * boards/ch32v30x_ob/board_config.h), the physical side of the second CDC
+ * function.  The board layer owns the hardware - instance, pins and clocks,
+ * all through board_init_app_uart() - while this file owns the line format and
+ * the DMA data path on top of it.
  *
  * The data path is DMA + interrupt driven end to end and never depends on the
  * main loop, which is normally parked inside gdb_if_getchar() waiting for a GDB
@@ -25,8 +26,8 @@
  */
 #include "aux_serial.h"
 
-#include "board.h"  /* BOARD_APP_UART*: the USB2UART hardware */
-#include "debug.h"  /* ch32v30x_conf.h -> GPIO / RCC / USART / DMA / misc */
+#include "board.h" /* BOARD_APP_UART*: the USB2UART hardware */
+#include "ch32fun.h"
 
 #if !BOARD_HAS_APP_UART
 #error "aux_serial needs an application UART: the board must provide BOARD_APP_UART*"
@@ -35,26 +36,38 @@
 /* The UART is the board's application UART.  Its instance, pins and clocks are
  * BOARD_APP_UART* macros, applied by the board in board_init_app_uart(); the
  * probe only builds the data path on top. */
-#define AUX_UART          BOARD_APP_UART
+#define AUX_UART         BOARD_APP_UART
+#define AUX_UART_IRQn    BOARD_APP_UART_IRQ
+
+/*
+ * APB1 runs at HCLK / 2 on this port (ch32fun's clock tree), so the USART
+ * divisor is derived from that.  If the APB1 prescaler ever changes, update
+ * this along with FUNCONF_SYSTEM_CORE_CLOCK usage in funconfig.h.
+ */
+#define AUX_PCLK1 (FUNCONF_SYSTEM_CORE_CLOCK / 2U)
 
 /*
  * CH32V30x DMA1 request mapping: USART3_TX is channel 2, USART3_RX is
  * channel 3 (the same fixed mapping STM32F1 uses).
- *
- * Careful with the two macro families: DMA_IT_* are the per-channel CFGR
- * enable bits (TCIE/HTIE/TEIE) that DMA_ITConfig() ORs straight into CFGR,
- * while DMA1_IT_* / DMA1_FLAG_* are the INTFR flag masks used by
- * DMA_GetITStatus()/DMA_ClearFlag().  Passing the latter to DMA_ITConfig()
- * silently reprograms DIR/CIRC/PSIZE instead of enabling an interrupt.
  */
 #define AUX_TX_DMA        DMA1_Channel2
 #define AUX_TX_DMA_IRQn   DMA1_Channel2_IRQn
-#define AUX_TX_DMA_IT     DMA_IT_TC
-#define AUX_TX_DMA_FLAGS  (DMA1_FLAG_GL2 | DMA1_FLAG_TC2 | DMA1_FLAG_HT2 | DMA1_FLAG_TE2)
 #define AUX_RX_DMA        DMA1_Channel3
 #define AUX_RX_DMA_IRQn   DMA1_Channel3_IRQn
-#define AUX_RX_DMA_IT     (DMA_IT_HT | DMA_IT_TC)
-#define AUX_RX_DMA_FLAGS  (DMA1_FLAG_GL3 | DMA1_FLAG_TC3 | DMA1_FLAG_HT3 | DMA1_FLAG_TE3)
+
+/* DMA CFGR bits used below (same layout as the WCH library defines). */
+#define AUX_DMA_CFGR_EN      0x0001U
+#define AUX_DMA_CFGR_TCIE    0x0002U
+#define AUX_DMA_CFGR_HTIE    0x0004U
+#define AUX_DMA_CFGR_DIR_P2M 0x0000U
+#define AUX_DMA_CFGR_DIR_M2P 0x0010U
+#define AUX_DMA_CFGR_CIRC    0x0020U
+#define AUX_DMA_CFGR_MINC    0x0080U
+#define AUX_DMA_CFGR_PL_HIGH 0x2000U
+
+/* DMA1->INTFR flags, per channel (GIF/TCIF/HTIF/TEIF). */
+#define AUX_TX_DMA_FLAGS (0x1U << 4)  /* GL2 */
+#define AUX_RX_DMA_FLAGS (0x1U << 8)  /* GL3 */
 
 /* Circular DMA destination, must be a power of two. */
 #define AUX_RX_BUF_SIZE 256U
@@ -102,7 +115,7 @@ void aux_serial_set_sink(aux_serial_sink_fn sink)
 /* Where the DMA has written up to, derived from its remaining count. */
 static inline uint16_t aux_rx_head(void)
 {
-    return (uint16_t)(AUX_RX_BUF_SIZE - DMA_GetCurrDataCounter(AUX_RX_DMA)) & AUX_RX_BUF_MASK;
+    return (uint16_t)(AUX_RX_BUF_SIZE - AUX_RX_DMA->CNTR) & AUX_RX_BUF_MASK;
 }
 
 /*
@@ -136,10 +149,10 @@ void aux_serial_usb_ready(void)
     aux_serial_forward();
 }
 
-void USART3_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
+void USART3_IRQHandler(void) INTERRUPT_DECORATOR;
 void USART3_IRQHandler(void)
 {
-    if (USART_GetITStatus(AUX_UART, USART_IT_IDLE) == RESET) {
+    if ((AUX_UART->STATR & USART_STATR_IDLE) == 0U) {
         return;
     }
     /* Reading the status register and then the data register clears IDLE (and
@@ -151,11 +164,11 @@ void USART3_IRQHandler(void)
     aux_serial_forward();
 }
 
-void DMA1_Channel3_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
+void DMA1_Channel3_IRQHandler(void) INTERRUPT_DECORATOR;
 void DMA1_Channel3_IRQHandler(void)
 {
-    /* Clears the half transfer and transfer complete flags together. */
-    DMA_ClearFlag(AUX_RX_DMA_FLAGS);
+    /* Clears the global (half transfer + transfer complete) flags together. */
+    DMA1->INTFR = AUX_RX_DMA_FLAGS;
 
     aux_serial_forward();
 }
@@ -179,21 +192,21 @@ static void aux_tx_kick(void)
 
         tx_run = run;
         tx_busy = true;
-        DMA_Cmd(AUX_TX_DMA, DISABLE);
-        DMA_ClearFlag(AUX_TX_DMA_FLAGS);
+        AUX_TX_DMA->CFGR &= ~AUX_DMA_CFGR_EN;
+        DMA1->INTFR = AUX_TX_DMA_FLAGS;
         AUX_TX_DMA->MADDR = (uint32_t)&tx_buf[tx_tail];
-        DMA_SetCurrDataCounter(AUX_TX_DMA, run);
-        DMA_Cmd(AUX_TX_DMA, ENABLE);
+        AUX_TX_DMA->CNTR = run;
+        AUX_TX_DMA->CFGR |= AUX_DMA_CFGR_EN;
     }
 
     NVIC_EnableIRQ(AUX_TX_DMA_IRQn);
 }
 
-void DMA1_Channel2_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
+void DMA1_Channel2_IRQHandler(void) INTERRUPT_DECORATOR;
 void DMA1_Channel2_IRQHandler(void)
 {
-    DMA_Cmd(AUX_TX_DMA, DISABLE);
-    DMA_ClearFlag(AUX_TX_DMA_FLAGS);
+    AUX_TX_DMA->CFGR &= ~AUX_DMA_CFGR_EN;
+    DMA1->INTFR = AUX_TX_DMA_FLAGS;
 
     tx_tail = (uint16_t)((tx_tail + tx_run) & AUX_TX_BUF_MASK);
     tx_busy = false;
@@ -231,85 +244,79 @@ uint32_t aux_serial_write(const uint8_t *src, uint32_t len)
 
 static void uart_apply_encoding(void)
 {
-    USART_InitTypeDef uart = { 0 };
+    /* Keep every control bit that is not part of the frame format (IDLEIE,
+     * DMA enables, ...) and only rewrite M/PCE/PS/TE/RE. */
+    uint16_t ctlr1 = AUX_UART->CTLR1;
 
-    uart.USART_BaudRate = line_coding.baudrate;
-    uart.USART_WordLength = USART_WordLength_8b;
-    uart.USART_StopBits = (line_coding.stop_bits == 2U) ? USART_StopBits_2 : USART_StopBits_1;
-    switch (line_coding.parity) {
-    case 1U:
-        uart.USART_Parity = USART_Parity_Odd;
-        break;
-    case 2U:
-        uart.USART_Parity = USART_Parity_Even;
-        break;
-    default:
-        uart.USART_Parity = USART_Parity_No;
-        break;
-    }
+    ctlr1 &= (uint16_t)~(0x1000U | 0x0400U | 0x0200U | 0x0008U | 0x0004U); /* M PCE PS TE RE */
+    ctlr1 |= USART_Mode_Rx | USART_Mode_Tx;
+
     /* USART_WordLength_8b counts the parity bit, so 8 data bits + parity needs
      * 9 bit frames.  Only 8 data bits are supported: 7N1 has no encoding on this
      * USART (7 data bits always come with a parity bit), so a request for 7 is
      * honoured as 8 and reported back as 8 by aux_serial_get_encoding(). */
-    if (uart.USART_Parity != USART_Parity_No) {
-        uart.USART_WordLength = USART_WordLength_9b;
+    switch (line_coding.parity) {
+    case 1U:
+        ctlr1 |= 0x0600U; /* PCE | PS: odd */
+        ctlr1 |= 0x1000U; /* M: 9 bit frames for 8 data + parity */
+        break;
+    case 2U:
+        ctlr1 |= 0x0400U; /* PCE: even */
+        ctlr1 |= 0x1000U;
+        break;
+    default:
+        break;
     }
-    uart.USART_HardwareFlowControl = USART_HardwareFlowControl_None;
-    uart.USART_Mode = USART_Mode_Tx | USART_Mode_Rx;
 
-    USART_Init(AUX_UART, &uart);
+    AUX_UART->CTLR1 = ctlr1;
+    AUX_UART->CTLR2 = (line_coding.stop_bits == 2U) ? 0x2000U : 0x0000U;
+
+    /*
+     * BRR: the WCH divisor, 16x oversampling, PCLK1 as the source:
+     *   usartdiv = 25 * PCLK1 / (4 * baud)  (in hundredths of a bit period)
+     *   BRR = mantissa << 4 | round(fraction * 16)
+     */
+    const uint32_t usartdiv = (25U * AUX_PCLK1) / (4U * line_coding.baudrate);
+    uint32_t brr = (usartdiv / 100U) << 4;
+    uint32_t fraction = usartdiv - (100U * (brr >> 4));
+    fraction = ((fraction * 16U) + 50U) / 100U;
+    if (fraction > 0x0FU) {
+        brr += 1U << 4;
+    } else {
+        brr |= fraction & 0x0FU;
+    }
+    AUX_UART->BRR = (uint16_t)brr;
 }
 
 static void aux_serial_init_rx_dma(void)
 {
-    DMA_InitTypeDef dma = { 0 };
+    AUX_RX_DMA->CFGR = 0;
+    AUX_RX_DMA->CNTR = AUX_RX_BUF_SIZE;
+    AUX_RX_DMA->PADDR = (uint32_t)&AUX_UART->DATAR;
+    AUX_RX_DMA->MADDR = (uint32_t)rx_buf;
+    AUX_RX_DMA->CFGR = AUX_DMA_CFGR_MINC | AUX_DMA_CFGR_CIRC | AUX_DMA_CFGR_PL_HIGH |
+        AUX_DMA_CFGR_HTIE | AUX_DMA_CFGR_TCIE;
 
-    DMA_DeInit(AUX_RX_DMA);
-    dma.DMA_PeripheralBaseAddr = (uint32_t)&AUX_UART->DATAR;
-    dma.DMA_MemoryBaseAddr = (uint32_t)rx_buf;
-    dma.DMA_DIR = DMA_DIR_PeripheralSRC;
-    dma.DMA_BufferSize = AUX_RX_BUF_SIZE;
-    dma.DMA_PeripheralInc = DMA_PeripheralInc_Disable;
-    dma.DMA_MemoryInc = DMA_MemoryInc_Enable;
-    dma.DMA_PeripheralDataSize = DMA_PeripheralDataSize_Byte;
-    dma.DMA_MemoryDataSize = DMA_MemoryDataSize_Byte;
-    dma.DMA_Mode = DMA_Mode_Circular;
-    dma.DMA_Priority = DMA_Priority_High;
-    dma.DMA_M2M = DMA_M2M_Disable;
-    DMA_Init(AUX_RX_DMA, &dma);
-
-    DMA_ClearFlag(AUX_RX_DMA_FLAGS);
-    DMA_ITConfig(AUX_RX_DMA, AUX_RX_DMA_IT, ENABLE);
+    DMA1->INTFR = AUX_RX_DMA_FLAGS;
     NVIC_EnableIRQ(AUX_RX_DMA_IRQn);
-    DMA_Cmd(AUX_RX_DMA, ENABLE);
+    AUX_RX_DMA->CFGR |= AUX_DMA_CFGR_EN;
 }
 
 static void aux_serial_init_tx_dma(void)
 {
-    DMA_InitTypeDef dma = { 0 };
+    AUX_TX_DMA->CFGR = 0;
+    AUX_TX_DMA->CNTR = 0; /* loaded per run by aux_tx_kick() */
+    AUX_TX_DMA->PADDR = (uint32_t)&AUX_UART->DATAR;
+    AUX_TX_DMA->MADDR = (uint32_t)tx_buf;
+    AUX_TX_DMA->CFGR = AUX_DMA_CFGR_DIR_M2P | AUX_DMA_CFGR_MINC | AUX_DMA_CFGR_PL_HIGH | AUX_DMA_CFGR_TCIE;
 
-    DMA_DeInit(AUX_TX_DMA);
-    dma.DMA_PeripheralBaseAddr = (uint32_t)&AUX_UART->DATAR;
-    dma.DMA_MemoryBaseAddr = (uint32_t)tx_buf;
-    dma.DMA_DIR = DMA_DIR_PeripheralDST;
-    dma.DMA_BufferSize = 0U; /* loaded per run by aux_tx_kick() */
-    dma.DMA_PeripheralInc = DMA_PeripheralInc_Disable;
-    dma.DMA_MemoryInc = DMA_MemoryInc_Enable;
-    dma.DMA_PeripheralDataSize = DMA_PeripheralDataSize_Byte;
-    dma.DMA_MemoryDataSize = DMA_MemoryDataSize_Byte;
-    dma.DMA_Mode = DMA_Mode_Normal;
-    dma.DMA_Priority = DMA_Priority_High;
-    dma.DMA_M2M = DMA_M2M_Disable;
-    DMA_Init(AUX_TX_DMA, &dma);
-
-    DMA_ClearFlag(AUX_TX_DMA_FLAGS);
-    DMA_ITConfig(AUX_TX_DMA, AUX_TX_DMA_IT, ENABLE);
+    DMA1->INTFR = AUX_TX_DMA_FLAGS;
     NVIC_EnableIRQ(AUX_TX_DMA_IRQn);
 }
 
 void aux_serial_init(void)
 {
-    RCC_AHBPeriphClockCmd(RCC_AHBPeriph_DMA1, ENABLE);
+    RCC->AHBPCENR |= RCC_AHBPeriph_DMA1;
 
     /* Board side: instance, pins, clocks and the power-on line format. */
     board_init_app_uart();
@@ -326,11 +333,11 @@ void aux_serial_init(void)
 
     /* Only the idle line interrupt is needed: the data itself is moved by DMA,
      * the interrupt just says "the burst stopped, forward what you have". */
-    USART_ITConfig(AUX_UART, USART_IT_IDLE, ENABLE);
-    NVIC_EnableIRQ(USART3_IRQn);
+    AUX_UART->CTLR1 |= USART_CTLR1_IDLEIE;
+    NVIC_EnableIRQ(AUX_UART_IRQn);
 
-    USART_Cmd(AUX_UART, ENABLE);
-    USART_DMACmd(AUX_UART, USART_DMAReq_Tx | USART_DMAReq_Rx, ENABLE);
+    AUX_UART->CTLR1 |= USART_CTLR1_UE;
+    AUX_UART->CTLR3 |= USART_CTLR3_DMAT | USART_CTLR3_DMAR;
 
     pins_enabled = true;
 }
@@ -352,9 +359,9 @@ void aux_serial_set_encoding(const struct aux_line_coding *coding)
     /* Only 8 data bit frames exist on this USART (see uart_apply_encoding()). */
     line_coding.data_bits = 8U;
     if (pins_enabled) {
-        USART_Cmd(AUX_UART, DISABLE);
+        AUX_UART->CTLR1 &= (uint16_t)~USART_CTLR1_UE;
         uart_apply_encoding();
-        USART_Cmd(AUX_UART, ENABLE);
+        AUX_UART->CTLR1 |= USART_CTLR1_UE;
     }
 }
 

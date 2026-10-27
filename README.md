@@ -14,11 +14,11 @@ CMakePresets.json         release / debug presets
 bmp_port/                 port layer: USB, bit-banged SWD/JTAG, target UART,
                           timing, bootloader handshake, MCU glue
 bmp_port/CMakeLists.txt   port sources + blackmagic sources and includes
-cmake/wch_riscv.cmake     toolchain file (riscv-wch-elf-)
+cmake/ch32fun_riscv.cmake toolchain file (riscv-wch-elf-)
 third_party_components/
   blackmagic/             submodule: BMP core and target drivers
   CherryUSB/              submodule: USB stack + CH32V30x USBHS port
-SDK/                      WCH ch32v30x peripheral library
+  ch32fun/                submodule: startup, clock tree, vectors, registers
 boards/ch32v30x_ob/      board BSP
 linkfile/flash_dfu.ld     application linker script (0x00008000, 96K)
 shared/boot_protocol.h    bootloader/application contract (partition, BKP)

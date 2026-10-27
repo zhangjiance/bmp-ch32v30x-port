@@ -12,11 +12,11 @@ main.c                    应用入口
 CMakePresets.json         release / debug 预设
 bmp_port/                 端口层：USB、GPIO 位操作 SWD/JTAG、目标串口、定时、boot 握手、MCU glue
 bmp_port/CMakeLists.txt   端口源清单 + blackmagic 源清单与 include
-cmake/wch_riscv.cmake     工具链（riscv-wch-elf-）
+cmake/ch32fun_riscv.cmake 工具链（riscv-wch-elf-）
 third_party_components/
   blackmagic/             子仓：BMP 核心与 target 驱动
   CherryUSB/              子仓：USB 协议栈 + CH32V30x USBHS 端口
-SDK/                      WCH ch32v30x 外设库
+  ch32fun/                子仓：启动、时钟树、中断向量表、寄存器头
 boards/ch32v30x_ob/      板级 BSP
 linkfile/flash_dfu.ld     应用链接脚本（0x00008000，96K）
 shared/boot_protocol.h    boot 与 app 的约定（分区、BKP 触发）

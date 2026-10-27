@@ -52,17 +52,6 @@
                 "BMP_SLIM": "ON"
             },
             "binaryDir": "${sourceDir}/build/ch32v30x_ob-slim"
-        },
-        {
-            "name": "ch32v30x_ob-ch32fun",
-            "displayName": "CH32V30x BMP (ch32fun backend)",
-            "description": "Builds against ch32fun instead of the WCH peripheral library. Same functionality as the default preset.",
-            "inherits": "base",
-            "cacheVariables": {
-                "BOARD": "ch32v30x_ob",
-                "BMP_CH32FUN": "ON"
-            },
-            "binaryDir": "${sourceDir}/build/ch32v30x_ob-ch32fun"
         }
     ],
     "buildPresets": [
@@ -74,11 +63,6 @@
         {
             "name": "ch32v30x_ob-slim",
             "configurePreset": "ch32v30x_ob-slim",
-            "jobs": 8
-        },
-        {
-            "name": "ch32v30x_ob-ch32fun",
-            "configurePreset": "ch32v30x_ob-ch32fun",
             "jobs": 8
         },
         {

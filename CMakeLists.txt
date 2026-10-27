@@ -20,8 +20,8 @@ cmake_minimum_required(VERSION 3.22)
 #                          in bmp_port/jtag_port.h
 #   shared/                boot_protocol.h, the bootloader <-> app contract
 #   linkfile/              application linker script (0x00008000, 96 KB)
-#   SDK/                   WCH ch32v30x peripheral library
 #   third_party_components/blackmagic/  submodule: BMP core + target drivers
+#   third_party_components/ch32fun/     submodule: startup, clock tree, vectors
 #   third_party_components/CherryUSB/   submodule: USB stack + CH32V30x USBHS
 # ==============================================================================
 
@@ -44,50 +44,40 @@ set(CONFIG_CHERRYUSB_DEVICE_CDC_ACM 1)
 
 set(CHERRYUSB_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party_components/CherryUSB"
     CACHE PATH "CherryUSB submodule root")
-set(SDK_ROOT       "${CMAKE_CURRENT_SOURCE_DIR}/SDK"
-    CACHE PATH "WCH ch32v30x peripheral library root")
-set(CH32FUN_ROOT   "${CMAKE_CURRENT_SOURCE_DIR}/third_party_components/ch32fun"
-    CACHE PATH "ch32fun submodule root (startup, clock tree, register headers)")
 
 # ------------------------------------------------------------------------------
-# Peripheral backend
+# Peripheral backend: ch32fun
 #
-# BMP_CH32FUN=ON builds against ch32fun (startup, clock tree, vector table and
-# register headers) instead of the WCH ch32v30x peripheral library.  The two
-# backends produce the same firmware functionality; see the *_ch32fun.c files
-# in bmp_port/ and boards/<board>/.
+# ch32fun supplies the startup, the clock tree, the vector table and the
+# register headers; there is no vendor peripheral library in this project.
+#
+# ch32fun's ch32fun.h defines its own jmp_buf, which collides with newlib's when
+# both are visible in one translation unit (blackmagic's exception code pulls in
+# <setjmp.h>).  patches/ch32fun.patch guards that definition with
+# FUNCONF_NO_JMP_BUF and is applied to a private copy of the sources, so the
+# submodule itself stays pristine - same idea as the blackmagic slim patch.
 # ------------------------------------------------------------------------------
-option(BMP_CH32FUN "Use ch32fun instead of the WCH peripheral library" OFF)
-message(STATUS "ch32fun backend: ${BMP_CH32FUN}")
+set(_ch32fun_submodule "${CMAKE_CURRENT_SOURCE_DIR}/third_party_components/ch32fun")
+set(_ch32fun_patch "${CMAKE_CURRENT_SOURCE_DIR}/patches/ch32fun.patch")
+set(CH32FUN_ROOT "${CMAKE_BINARY_DIR}/ch32fun-patched")
+set(_ch32fun_stamp "${CH32FUN_ROOT}/.patch-applied")
 
-if(BMP_CH32FUN)
-    # ch32fun's ch32fun.h defines its own jmp_buf, which collides with newlib's
-    # when both are visible in one translation unit (blackmagic's exception code
-    # pulls in <setjmp.h>).  patches/ch32fun.patch guards that definition with
-    # FUNCONF_NO_JMP_BUF and is applied to a private copy of the sources, so the
-    # submodule itself stays pristine - same idea as the blackmagic slim patch.
-    set(_ch32fun_submodule "${CMAKE_CURRENT_SOURCE_DIR}/third_party_components/ch32fun")
-    set(_ch32fun_patch "${CMAKE_CURRENT_SOURCE_DIR}/patches/ch32fun.patch")
-    set(CH32FUN_ROOT "${CMAKE_BINARY_DIR}/ch32fun-patched")
-    set(_ch32fun_stamp "${CH32FUN_ROOT}/.patch-applied")
+if(NOT EXISTS "${_ch32fun_patch}")
+    message(FATAL_ERROR "Missing ${_ch32fun_patch}")
+endif()
 
-    if(NOT EXISTS "${_ch32fun_patch}")
-        message(FATAL_ERROR "BMP_CH32FUN=ON requires ${_ch32fun_patch}")
+if(NOT EXISTS "${_ch32fun_stamp}" OR "${_ch32fun_patch}" IS_NEWER_THAN "${_ch32fun_stamp}")
+    message(STATUS "ch32fun: refreshing patched copy in ${CH32FUN_ROOT}")
+    file(REMOVE_RECURSE "${CH32FUN_ROOT}")
+    file(COPY "${_ch32fun_submodule}/ch32fun" DESTINATION "${CH32FUN_ROOT}")
+    execute_process(
+        COMMAND patch -p1 -s -i "${_ch32fun_patch}"
+        WORKING_DIRECTORY "${CH32FUN_ROOT}"
+        RESULT_VARIABLE _ch32fun_patch_result)
+    if(NOT _ch32fun_patch_result EQUAL 0)
+        message(FATAL_ERROR "ch32fun: failed to apply ${_ch32fun_patch} (exit ${_ch32fun_patch_result})")
     endif()
-
-    if(NOT EXISTS "${_ch32fun_stamp}" OR "${_ch32fun_patch}" IS_NEWER_THAN "${_ch32fun_stamp}")
-        message(STATUS "ch32fun: refreshing patched copy in ${CH32FUN_ROOT}")
-        file(REMOVE_RECURSE "${CH32FUN_ROOT}")
-        file(COPY "${_ch32fun_submodule}/ch32fun" DESTINATION "${CH32FUN_ROOT}")
-        execute_process(
-            COMMAND patch -p1 -s -i "${_ch32fun_patch}"
-            WORKING_DIRECTORY "${CH32FUN_ROOT}"
-            RESULT_VARIABLE _ch32fun_patch_result)
-        if(NOT _ch32fun_patch_result EQUAL 0)
-            message(FATAL_ERROR "ch32fun: failed to apply ${_ch32fun_patch} (exit ${_ch32fun_patch_result})")
-        endif()
-        file(TOUCH "${_ch32fun_stamp}")
-    endif()
+    file(TOUCH "${_ch32fun_stamp}")
 endif()
 
 # ------------------------------------------------------------------------------
@@ -119,7 +109,7 @@ foreach(_submodule_file
     endif()
 endforeach()
 
-if(BMP_CH32FUN AND NOT EXISTS "${CH32FUN_ROOT}/ch32fun/ch32fun.c")
+if(NOT EXISTS "${CH32FUN_ROOT}/ch32fun/ch32fun.c")
     message(FATAL_ERROR "ch32fun not found at ${CH32FUN_ROOT}; run: git submodule update --init --recursive")
 endif()
 
@@ -140,11 +130,7 @@ message(STATUS "Board: ${BOARD}")
 option(BMP_SLIM "Build the size-optimised RISC-V/HPM-only probe" OFF)
 message(STATUS "BMP slim build: ${BMP_SLIM}")
 
-if(BMP_CH32FUN)
-    include("cmake/ch32fun_riscv.cmake")
-else()
-    include("cmake/wch_riscv.cmake")
-endif()
+include("cmake/ch32fun_riscv.cmake")
 include("${CHERRYUSB_ROOT}/cherryusb.cmake")
 
 # CherryUSB master has no usable CH32V30x USBHS port (port/wch/usbhs targets a
@@ -157,13 +143,9 @@ enable_language(C ASM)
 project(${CMAKE_PROJECT_NAME})
 
 set(PROJECT_TARGET ${CMAKE_PROJECT_NAME}.elf)
-if(BMP_CH32FUN)
-    # ch32fun's vector table lives in .init and the entry point is
-    # InterruptVector, so this script has no .vector output section.
-    set(LINKER_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/linkfile/flash_dfu_ch32fun.ld)
-else()
-    set(LINKER_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/linkfile/flash_dfu.ld)
-endif()
+# ch32fun's vector table lives in .init and the entry point is InterruptVector,
+# so this script has no .vector output section.
+set(LINKER_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/linkfile/flash_dfu.ld)
 
 add_link_options(
     -T ${LINKER_SCRIPT}
