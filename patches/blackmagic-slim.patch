@@ -267,6 +267,25 @@ index 8a3bd7ae..065277fd 100644
  #ifdef ENABLE_RTT
  	/* Force searching for the RTT control block */
  	rtt_found = false;
+diff --git a/src/gdb_packet.c b/src/gdb_packet.c
+index b0c95613..47e0e1f2 100644
+--- a/src/gdb_packet.c
++++ b/src/gdb_packet.c
+@@ -430,7 +430,13 @@ void gdb_put_notification_str(const char *const str)
+ 	 */
+ 	packet->notification = true;
+ 
+-	packet->size = strnlen(str, GDB_PACKET_BUFFER_SIZE);
++	/* Bounded walk instead of strnlen(): with LTO inlining a literal argument
++	 * GCC knows the object is shorter than GDB_PACKET_BUFFER_SIZE and warns
++	 * that the bound exceeds it. */
++	size_t length = 0;
++	while (length < GDB_PACKET_BUFFER_SIZE && str[length] != '\0')
++		++length;
++	packet->size = length;
+ 	memcpy(packet->data, str, packet->size);
+ 
+ 	/* Transmit the packet */
 diff --git a/src/remote.c b/src/remote.c
 index cbd07129..eb38381c 100644
 --- a/src/remote.c

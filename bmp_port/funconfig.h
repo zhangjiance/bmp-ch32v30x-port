@@ -72,6 +72,10 @@
  * ------------------------------------------------------------------ */
 #define FUNCONF_NO_JMP_BUF 1
 #include <setjmp.h>
+/* ch32fun.h still redefines these for its own (skipped) jmp_buf; drop the
+ * newlib values first so the redefinition is silent. */
+#undef _JBLEN
+#undef _JBTYPE
 
 /* ------------------------------------------------------------------ *
  * Size knobs

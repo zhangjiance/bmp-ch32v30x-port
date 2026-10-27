@@ -31,7 +31,7 @@ if(BMP_SLIM)
     # LTO is worth ~6.5 KB.  LTO is safe here: usb_dc_low_level_init() is only
     # *declared* by the CherryUSB driver and defined once, strongly, in
     # bmp_port/boot_usb_ch32v30xfun.c.
-    set(CMAKE_C_FLAGS_RELEASE "-Oz -flto -g0")
+    set(CMAKE_C_FLAGS_RELEASE "-Oz -flto=auto -g0")
 else()
     set(CMAKE_C_FLAGS_RELEASE "-Os -g0")
 endif()
@@ -65,5 +65,5 @@ add_link_options(
 )
 
 if(BMP_SLIM)
-    add_link_options(-flto)
+    add_link_options(-flto=auto)
 endif()
