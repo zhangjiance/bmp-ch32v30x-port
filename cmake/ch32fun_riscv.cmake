@@ -65,5 +65,7 @@ add_link_options(
 )
 
 if(BMP_SLIM)
-    add_link_options(-flto=auto)
+    # Only the Release configuration compiles with -flto=auto; keep the link
+    # option in step so a Debug build (no LTO objects) links the same way.
+    add_link_options($<$<CONFIG:Release>:-flto=auto>)
 endif()
