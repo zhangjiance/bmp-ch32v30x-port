@@ -78,6 +78,21 @@ endforeach()
 
 message(STATUS "Board: ${BOARD}")
 
+# ------------------------------------------------------------------------------
+# Build flavour
+#
+# BMP_SLIM=ON is the size-optimised probe image (RISC-V RV32/HPM targets only,
+# no ARM/SWD/ADIv5/ADIv6/SPI/semihosting).  The handful of blackmagic submodule
+# changes it needs are kept in patches/blackmagic-slim.patch and applied to a
+# private copy of the sources under the build directory, so the submodule stays
+# untouched.  See bmp_port/CMakeLists.txt.
+#
+# BMP_SLIM=OFF builds the full multi-architecture probe from the unmodified
+# submodule, exactly as before.
+# ------------------------------------------------------------------------------
+option(BMP_SLIM "Build the size-optimised RISC-V/HPM-only probe" OFF)
+message(STATUS "BMP slim build: ${BMP_SLIM}")
+
 include("cmake/wch_riscv.cmake")
 include("${CHERRYUSB_ROOT}/cherryusb.cmake")
 

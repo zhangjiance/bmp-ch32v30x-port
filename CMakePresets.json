@@ -41,12 +41,28 @@
                 "BOARD": "ch32v30x_ob"
             },
             "binaryDir": "${sourceDir}/build/ch32v30x_ob-debug"
+        },
+        {
+            "name": "ch32v30x_ob-slim",
+            "displayName": "CH32V30x BMP (Slim, RISC-V/HPM only)",
+            "description": "Size-optimised image: RISC-V RV32/HPM targets only. Applies patches/blackmagic-slim.patch to a private copy of the blackmagic sources; the submodule is left untouched.",
+            "inherits": "base",
+            "cacheVariables": {
+                "BOARD": "ch32v30x_ob",
+                "BMP_SLIM": "ON"
+            },
+            "binaryDir": "${sourceDir}/build/ch32v30x_ob-slim"
         }
     ],
     "buildPresets": [
         {
             "name": "ch32v30x_ob-release",
             "configurePreset": "ch32v30x_ob-release",
+            "jobs": 8
+        },
+        {
+            "name": "ch32v30x_ob-slim",
+            "configurePreset": "ch32v30x_ob-slim",
             "jobs": 8
         },
         {

@@ -1,0 +1,1059 @@
+diff --git a/src/command.c b/src/command.c
+index 738fc176..fb011f82 100644
+--- a/src/command.c
++++ b/src/command.c
+@@ -72,11 +72,9 @@ static bool cmd_version(target_s *target, int argc, const char **argv);
+ static bool cmd_help(target_s *target, int argc, const char **argv);
+ 
+ static bool cmd_jtag_scan(target_s *target, int argc, const char **argv);
+-static bool cmd_swd_scan(target_s *target, int argc, const char **argv);
+ #if defined(CONFIG_RVSWD) && defined(PLATFORM_HAS_RVSWD) && defined(CONFIG_RISCV)
+ static bool cmd_rvswd_scan(target_s *target, int argc, const char **argv);
+ #endif
+-static bool cmd_onboard_flash_scan(target_s *target, int argc, const char **argv);
+ static bool cmd_auto_scan(target_s *target, int argc, const char **argv);
+ static bool cmd_frequency(target_s *target, int argc, const char **argv);
+ static bool cmd_targets(target_s *target, int argc, const char **argv);
+@@ -116,12 +114,9 @@ static const command_s cmd_list[] = {
+ 	{"version", cmd_version, "Display firmware version info"},
+ 	{"help", cmd_help, "Display help for monitor commands"},
+ 	{"jtag_scan", cmd_jtag_scan, "Scan JTAG chain for devices"},
+-	{"swd_scan", cmd_swd_scan, "Scan SWD interface for devices: [TARGET_ID]"},
+-	{"swdp_scan", cmd_swd_scan, "Deprecated: use swd_scan instead"},
+ #if defined(CONFIG_RVSWD) && defined(PLATFORM_HAS_RVSWD) && defined(CONFIG_RISCV)
+ 	{"rvswd_scan", cmd_rvswd_scan, "Scan RVSWD for devices"},
+ #endif
+-	{"spi_scan", cmd_onboard_flash_scan, "Scan for on-board SPI Flash devices"},
+ 	{"auto_scan", cmd_auto_scan, "Automatically scan all chain types for devices"},
+ 	{"frequency", cmd_frequency, "Set minimum high and low times: [FREQ]"},
+ 	{"targets", cmd_targets, "Display list of available targets"},
+@@ -300,92 +295,6 @@ static bool cmd_jtag_scan(target_s *target, int argc, const char **argv)
+ 	return true;
+ }
+ 
+-bool cmd_swd_scan(target_s *target, int argc, const char **argv)
+-{
+-	(void)target;
+-	volatile uint32_t targetid = 0;
+-	if (argc > 1)
+-		targetid = strtoul(argv[1], NULL, 0);
+-	gdb_outf("Target voltage: %s\n", platform_target_voltage());
+-
+-	if (connect_assert_nrst)
+-		platform_nrst_set_val(true); /* will be deasserted after attach */
+-
+-	bool scan_result = false;
+-	TRY (EXCEPTION_ALL) {
+-#if CONFIG_BMDA == 1
+-		scan_result = bmda_swd_scan_targetid(targetid);
+-#else
+-		scan_result = adiv5_swd_scan_targetid(targetid);
+-#endif
+-	}
+-	CATCH () {
+-	case EXCEPTION_TIMEOUT:
+-		gdb_outf("Timeout during scan. Is target stuck in WFI?\n");
+-		break;
+-	case EXCEPTION_ERROR:
+-		gdb_outf("Exception: %s\n", exception_frame.msg);
+-		break;
+-	default:
+-		break;
+-	}
+-
+-#if defined(CONFIG_RVSWD) && defined(PLATFORM_HAS_RVSWD) && defined(CONFIG_RISCV)
+-	/* Treat RVSWD as a special kind of SWD: if the normal SWD scan finds
+-	 * nothing (e.g. the probe only exposes the target over RVSWD), fall back
+-	 * to the RVSWD scan instead of reporting failure. */
+-	if (!scan_result) {
+-		gdb_out("SWD scan failed, trying RVSWD...\n");
+-		TRY (EXCEPTION_ALL) {
+-#if CONFIG_BMDA == 1
+-			scan_result = bmda_rvswd_scan();
+-#else
+-			scan_result = rvswd_scan();
+-#endif
+-		}
+-		CATCH () {
+-		case EXCEPTION_TIMEOUT:
+-			gdb_outf("Timeout during scan. Is target stuck in WFI?\n");
+-			break;
+-		case EXCEPTION_ERROR:
+-			gdb_outf("Exception: %s\n", exception_frame.msg);
+-			break;
+-		default:
+-			break;
+-		}
+-	}
+-#endif
+-
+-	if (!scan_result) {
+-		platform_target_clk_output_enable(false);
+-		platform_nrst_set_val(false);
+-		gdb_out("SWD scan failed!\n");
+-		return false;
+-	}
+-
+-	cmd_targets(NULL, 0, NULL);
+-	platform_target_clk_output_enable(false);
+-	morse(NULL, false);
+-	return true;
+-}
+-
+-bool cmd_onboard_flash_scan(target_s *target, int argc, const char **argv)
+-{
+-	(void)target;
+-	(void)argc;
+-	(void)argv;
+-
+-	/* Attempt a SPI bus scan for Flash */
+-	if (!onboard_flash_scan()) {
+-		gdb_out("On-board Flash scan failed!\n");
+-		return false;
+-	}
+-	/* If that succeeded, register global target commands and clear morse code state */
+-	cmd_targets(NULL, 0, NULL);
+-	morse(NULL, false);
+-	return true;
+-}
+-
+ #if defined(CONFIG_RVSWD) && defined(PLATFORM_HAS_RVSWD) && defined(CONFIG_RISCV)
+ bool cmd_rvswd_scan(target_s *target, int argc, const char **argv)
+ {
+@@ -448,7 +357,6 @@ bool cmd_auto_scan(target_s *target, int argc, const char **argv)
+ 		/* clang-format off */
+ 	{
+ 		{bmda_jtag_scan, "JTAG"},
+-		{bmda_swd_scan, "SWD"},
+ #if defined(CONFIG_RVSWD) && defined(PLATFORM_HAS_RVSWD) && defined(CONFIG_RISCV)
+ 		{bmda_rvswd_scan, "RVSWD"},
+ #endif
+@@ -456,7 +364,6 @@ bool cmd_auto_scan(target_s *target, int argc, const char **argv)
+ #else
+ 	{
+ 		{jtag_scan, "JTAG"},
+-		{adiv5_swd_scan, "SWD"},
+ #if defined(CONFIG_RVSWD) && defined(PLATFORM_HAS_RVSWD) && defined(CONFIG_RISCV)
+ 		{rvswd_scan, "RVSWD"},
+ #endif
+diff --git a/src/crc32.c b/src/crc32.c
+index d35e8f93..b861bda9 100644
+--- a/src/crc32.c
++++ b/src/crc32.c
+@@ -31,78 +31,25 @@
+ #if defined(GENERIC_CRC32_IMPL)
+ 
+ /* clang-format off */
+-static const uint32_t crc32_table[] = {
++/*
++ * 16-entry nibble table: two nibble steps replace one byte step, trading a
++ * few instructions for 960 bytes of .rodata (the byte table was 256 entries).
++ */
++static const uint32_t crc32_table[16] = {
+ 	0x00000000, 0x04c11db7, 0x09823b6e, 0x0d4326d9,
+ 	0x130476dc, 0x17c56b6b, 0x1a864db2, 0x1e475005,
+ 	0x2608edb8, 0x22c9f00f, 0x2f8ad6d6, 0x2b4bcb61,
+ 	0x350c9b64, 0x31cd86d3, 0x3c8ea00a, 0x384fbdbd,
+-	0x4c11db70, 0x48d0c6c7, 0x4593e01e, 0x4152fda9,
+-	0x5f15adac, 0x5bd4b01b, 0x569796c2, 0x52568b75,
+-	0x6a1936c8, 0x6ed82b7f, 0x639b0da6, 0x675a1011,
+-	0x791d4014, 0x7ddc5da3, 0x709f7b7a, 0x745e66cd,
+-	0x9823b6e0, 0x9ce2ab57, 0x91a18d8e, 0x95609039,
+-	0x8b27c03c, 0x8fe6dd8b, 0x82a5fb52, 0x8664e6e5,
+-	0xbe2b5b58, 0xbaea46ef, 0xb7a96036, 0xb3687d81,
+-	0xad2f2d84, 0xa9ee3033, 0xa4ad16ea, 0xa06c0b5d,
+-	0xd4326d90, 0xd0f37027, 0xddb056fe, 0xd9714b49,
+-	0xc7361b4c, 0xc3f706fb, 0xceb42022, 0xca753d95,
+-	0xf23a8028, 0xf6fb9d9f, 0xfbb8bb46, 0xff79a6f1,
+-	0xe13ef6f4, 0xe5ffeb43, 0xe8bccd9a, 0xec7dd02d,
+-	0x34867077, 0x30476dc0, 0x3d044b19, 0x39c556ae,
+-	0x278206ab, 0x23431b1c, 0x2e003dc5, 0x2ac12072,
+-	0x128e9dcf, 0x164f8078, 0x1b0ca6a1, 0x1fcdbb16,
+-	0x018aeb13, 0x054bf6a4, 0x0808d07d, 0x0cc9cdca,
+-	0x7897ab07, 0x7c56b6b0, 0x71159069, 0x75d48dde,
+-	0x6b93dddb, 0x6f52c06c, 0x6211e6b5, 0x66d0fb02,
+-	0x5e9f46bf, 0x5a5e5b08, 0x571d7dd1, 0x53dc6066,
+-	0x4d9b3063, 0x495a2dd4, 0x44190b0d, 0x40d816ba,
+-	0xaca5c697, 0xa864db20, 0xa527fdf9, 0xa1e6e04e,
+-	0xbfa1b04b, 0xbb60adfc, 0xb6238b25, 0xb2e29692,
+-	0x8aad2b2f, 0x8e6c3698, 0x832f1041, 0x87ee0df6,
+-	0x99a95df3, 0x9d684044, 0x902b669d, 0x94ea7b2a,
+-	0xe0b41de7, 0xe4750050, 0xe9362689, 0xedf73b3e,
+-	0xf3b06b3b, 0xf771768c, 0xfa325055, 0xfef34de2,
+-	0xc6bcf05f, 0xc27dede8, 0xcf3ecb31, 0xcbffd686,
+-	0xd5b88683, 0xd1799b34, 0xdc3abded, 0xd8fba05a,
+-	0x690ce0ee, 0x6dcdfd59, 0x608edb80, 0x644fc637,
+-	0x7a089632, 0x7ec98b85, 0x738aad5c, 0x774bb0eb,
+-	0x4f040d56, 0x4bc510e1, 0x46863638, 0x42472b8f,
+-	0x5c007b8a, 0x58c1663d, 0x558240e4, 0x51435d53,
+-	0x251d3b9e, 0x21dc2629, 0x2c9f00f0, 0x285e1d47,
+-	0x36194d42, 0x32d850f5, 0x3f9b762c, 0x3b5a6b9b,
+-	0x0315d626, 0x07d4cb91, 0x0a97ed48, 0x0e56f0ff,
+-	0x1011a0fa, 0x14d0bd4d, 0x19939b94, 0x1d528623,
+-	0xf12f560e, 0xf5ee4bb9, 0xf8ad6d60, 0xfc6c70d7,
+-	0xe22b20d2, 0xe6ea3d65, 0xeba91bbc, 0xef68060b,
+-	0xd727bbb6, 0xd3e6a601, 0xdea580d8, 0xda649d6f,
+-	0xc423cd6a, 0xc0e2d0dd, 0xcda1f604, 0xc960ebb3,
+-	0xbd3e8d7e, 0xb9ff90c9, 0xb4bcb610, 0xb07daba7,
+-	0xae3afba2, 0xaafbe615, 0xa7b8c0cc, 0xa379dd7b,
+-	0x9b3660c6, 0x9ff77d71, 0x92b45ba8, 0x9675461f,
+-	0x8832161a, 0x8cf30bad, 0x81b02d74, 0x857130c3,
+-	0x5d8a9099, 0x594b8d2e, 0x5408abf7, 0x50c9b640,
+-	0x4e8ee645, 0x4a4ffbf2, 0x470cdd2b, 0x43cdc09c,
+-	0x7b827d21, 0x7f436096, 0x7200464f, 0x76c15bf8,
+-	0x68860bfd, 0x6c47164a, 0x61043093, 0x65c52d24,
+-	0x119b4be9, 0x155a565e, 0x18197087, 0x1cd86d30,
+-	0x029f3d35, 0x065e2082, 0x0b1d065b, 0x0fdc1bec,
+-	0x3793a651, 0x3352bbe6, 0x3e119d3f, 0x3ad08088,
+-	0x2497d08d, 0x2056cd3a, 0x2d15ebe3, 0x29d4f654,
+-	0xc5a92679, 0xc1683bce, 0xcc2b1d17, 0xc8ea00a0,
+-	0xd6ad50a5, 0xd26c4d12, 0xdf2f6bcb, 0xdbee767c,
+-	0xe3a1cbc1, 0xe760d676, 0xea23f0af, 0xeee2ed18,
+-	0xf0a5bd1d, 0xf464a0aa, 0xf9278673, 0xfde69bc4,
+-	0x89b8fd09, 0x8d79e0be, 0x803ac667, 0x84fbdbd0,
+-	0x9abc8bd5, 0x9e7d9662, 0x933eb0bb, 0x97ffad0c,
+-	0xafb010b1, 0xab710d06, 0xa6322bdf, 0xa2f33668,
+-	0xbcb4666d, 0xb8757bda, 0xb5365d03, 0xb1f740b4,
+ };
+ 
+ /* clang-format on */
+ 
+-static uint32_t crc32_calc(const uint32_t crc, const uint8_t data)
++static uint32_t crc32_calc(uint32_t crc, const uint8_t data)
+ {
+-	return (crc << 8U) ^ crc32_table[((crc >> 24U) ^ data) & 0xffU];
++	crc ^= (uint32_t)data << 24U;
++	crc = (crc << 4U) ^ crc32_table[(crc >> 28U) & 0x0fU];
++	crc = (crc << 4U) ^ crc32_table[(crc >> 28U) & 0x0fU];
++	return crc;
+ }
+ 
+ static bool generic_crc32(target_s *const target, uint32_t *const result, const uint32_t base, const size_t len)
+diff --git a/src/gdb_main.c b/src/gdb_main.c
+index 8a3bd7ae..065277fd 100644
+--- a/src/gdb_main.c
++++ b/src/gdb_main.c
+@@ -36,7 +36,6 @@
+ #include "gdb_main.h"
+ #include "target.h"
+ #include "target_internal.h"
+-#include "semihosting.h"
+ #include "command.h"
+ #include "crc32.h"
+ #include "morse.h"
+@@ -302,16 +301,6 @@ int32_t gdb_main_loop(target_controller_s *const tc, const gdb_packet_s *const p
+ 		break;
+ 	}
+ 
+-	case 'F': /* Semihosting call finished */
+-		if (in_syscall)
+-			/* Trim off the 'F' before calling semihosting_reply so that it doesn't have to skip it */
+-			return semihosting_reply(tc, packet->data + 1);
+-		else {
+-			DEBUG_GDB("*** F packet when not in syscall! '%s'\n", packet->data);
+-			gdb_put_packet_empty();
+-		}
+-		break;
+-
+ 	case '!': /* Enable Extended GDB Protocol. */
+ 		/*
+ 		 * This doesn't do anything, we support the extended
+@@ -744,8 +733,6 @@ static void exec_v_run(const char *packet, const size_t length)
+ 		break;
+ 	}
+ 	cmdline[offset] = '\0';
+-	/* Reset the semihosting SYS_CLOCK start point */
+-	semihosting_wallclock_epoch = UINT32_MAX;
+ #ifdef ENABLE_RTT
+ 	/* Force searching for the RTT control block */
+ 	rtt_found = false;
+diff --git a/src/remote.c b/src/remote.c
+index cbd07129..eb38381c 100644
+--- a/src/remote.c
++++ b/src/remote.c
+@@ -29,12 +29,7 @@
+ #include "gdb_packet.h"
+ #include "gdb_if.h"
+ #include "jtagtap.h"
+-#include "swd.h"
+-#include "spi.h"
+-#include "sfdp.h"
+ #include "target.h"
+-#include "adiv5.h"
+-#include "adiv6.h"
+ #if defined(CONFIG_RISCV_ACCEL) && CONFIG_RISCV_ACCEL == 1
+ #include "riscv_debug.h"
+ #endif
+@@ -43,8 +38,6 @@
+ #include "hex_utils.h"
+ 
+ #if CONFIG_BMDA == 0
+-static void remote_packet_process_adiv6(gdb_packet_s *packet);
+-
+ /* hex-ify and send a buffer of data */
+ static void remote_send_buf(const void *const buffer, const size_t len)
+ {
+@@ -112,88 +105,10 @@ static void remote_respond_string(const char response_code, const char *const st
+ 	gdb_if_putchar(REMOTE_EOM, true);
+ }
+ 
+-/*
+- * This faked ADIv5 DP structure holds the currently used low-level implementation functions (SWD vs JTAG)
+- * and basic DP state for remote protocol requests made. This is shared between remote_packet_process_swd()
+- * and remote_packet_process_jtag() for use by remote_packet_process_adiv5() so its faked AP can do the right
+- * thing.
+- *
+- * REMOTE_INIT for SWD and JTAG rewrite the {read,write}_no_check, dp_read, error, low_access and abort function
+- * pointers to reconfigure this structure appropriately.
+- */
+-static adiv5_debug_port_s remote_dp = {
+-	.ap_read = adiv5_ap_reg_read,
+-	.ap_write = adiv5_ap_reg_write,
+-	.mem_read = adiv5_mem_read_bytes,
+-	.mem_write = adiv5_mem_write_bytes,
+-};
+-
+-static void remote_packet_process_swd(gdb_packet_s *const packet)
+-{
+-	switch (packet->data[1]) {
+-	case REMOTE_INIT: /* SS = initialise =============================== */
+-		if (packet->size == 2) {
+-			remote_dp.write_no_check = adiv5_swd_write_no_check;
+-			remote_dp.read_no_check = adiv5_swd_read_no_check;
+-			remote_dp.dp_read = adiv5_swd_read;
+-			remote_dp.error = adiv5_swd_clear_error;
+-			remote_dp.low_access = adiv5_swd_raw_access;
+-			remote_dp.abort = adiv5_swd_abort;
+-			remote_dp.ensure_idle = NULL;
+-			swdptap_init();
+-			remote_respond(REMOTE_RESP_OK, 0);
+-		} else
+-			remote_respond(REMOTE_RESP_ERR, REMOTE_ERROR_WRONGLEN);
+-		break;
+-
+-	case REMOTE_IN_PAR: { /* SI = In parity ============================= */
+-		const size_t clock_cycles = hex_string_to_num(2, packet->data + 2);
+-		uint32_t result = 0;
+-		const bool parity_ok = swd_proc.seq_in_parity(&result, clock_cycles);
+-		remote_respond(parity_ok ? REMOTE_RESP_OK : REMOTE_RESP_PARERR, result);
+-		break;
+-	}
+-
+-	case REMOTE_IN: { /* Si = In ======================================= */
+-		const size_t clock_cycles = hex_string_to_num(2, packet->data + 2);
+-		const uint32_t result = swd_proc.seq_in(clock_cycles);
+-		remote_respond(REMOTE_RESP_OK, result);
+-		break;
+-	}
+-
+-	case REMOTE_OUT: { /* So = Out ====================================== */
+-		const size_t clock_cycles = hex_string_to_num(2, packet->data + 2);
+-		const uint32_t data = hex_string_to_num(-1, packet->data + 4);
+-		swd_proc.seq_out(data, clock_cycles);
+-		remote_respond(REMOTE_RESP_OK, 0);
+-		break;
+-	}
+-
+-	case REMOTE_OUT_PAR: { /* SO = Out parity ========================== */
+-		const size_t clock_cycles = hex_string_to_num(2, packet->data + 2);
+-		const uint32_t data = hex_string_to_num(-1, packet->data + 4);
+-		swd_proc.seq_out_parity(data, clock_cycles);
+-		remote_respond(REMOTE_RESP_OK, 0);
+-		break;
+-	}
+-
+-	default:
+-		remote_respond(REMOTE_RESP_ERR, REMOTE_ERROR_UNRECOGNISED);
+-		break;
+-	}
+-}
+-
+ static void remote_packet_process_jtag(gdb_packet_s *const packet)
+ {
+ 	switch (packet->data[1]) {
+ 	case REMOTE_INIT: /* JS = initialise ============================= */
+-		remote_dp.write_no_check = NULL;
+-		remote_dp.read_no_check = NULL;
+-		remote_dp.dp_read = adiv5_jtag_read;
+-		remote_dp.error = adiv5_jtag_clear_error;
+-		remote_dp.low_access = adiv5_jtag_raw_access;
+-		remote_dp.abort = adiv5_jtag_abort;
+-		remote_dp.ensure_idle = adiv5_jtag_ensure_idle;
+ 		jtagtap_init();
+ 		remote_respond(REMOTE_RESP_OK, 0);
+ 		break;
+@@ -252,8 +167,6 @@ static void remote_packet_process_jtag(gdb_packet_s *const packet)
+ 	}
+ 
+ 	case REMOTE_JTAG_ENSURE_IDLE: /* JI = re-cycle IR after indirect resets */
+-		if (remote_dp.ensure_idle)
+-			remote_dp.ensure_idle(&remote_dp);
+ 		remote_respond(REMOTE_RESP_OK, 0);
+ 		break;
+ 
+@@ -360,9 +273,10 @@ static void remote_packet_process_high_level(gdb_packet_s *const packet)
+ 	case REMOTE_HL_ACCEL: /* HA = request what accelerations are available */
+ 		/* Build a response value that depends on what things are built into the firmare */
+ 		remote_respond(REMOTE_RESP_OK,
+-			REMOTE_ACCEL_ADIV5 | REMOTE_ACCEL_ADIV6
+ #if defined(CONFIG_RISCV_ACCEL) && CONFIG_RISCV_ACCEL == 1
+-				| REMOTE_ACCEL_RISCV
++			REMOTE_ACCEL_RISCV
++#else
++			0U
+ #endif
+ 		);
+ 		break;
+@@ -377,7 +291,7 @@ static void remote_packet_process_high_level(gdb_packet_s *const packet)
+ 				REMOTE_ARCH_CORTEXAR |
+ #endif
+ #if defined(CONFIG_RISCV) && CONFIG_RISCV == 1
+-				REMOTE_ARCH_RISCV32 | REMOTE_ARCH_RISCV64 |
++				REMOTE_ARCH_RISCV32 |
+ #endif
+ 				0U);
+ 		break;
+@@ -452,266 +366,6 @@ static void remote_packet_process_high_level(gdb_packet_s *const packet)
+ 	SET_IDLE_STATE(1);
+ }
+ 
+-static void remote_adiv5_respond(const void *const data, const size_t length)
+-{
+-	if (remote_dp.fault)
+-		/* If the request didn't work and caused a fault, tell the host */
+-		remote_respond(REMOTE_RESP_ERR, REMOTE_ERROR_FAULT | ((uint16_t)remote_dp.fault << 8U));
+-	else {
+-		/* Otherwise reply back with the data */
+-		if (data)
+-			remote_respond_buf(REMOTE_RESP_OK, data, length);
+-		else
+-			remote_respond(REMOTE_RESP_OK, 0);
+-	}
+-}
+-
+-static void remote_packet_process_adiv5(gdb_packet_s *const packet)
+-{
+-	/* Check there's at least an ADI command byte */
+-	if (packet->size < 2U) {
+-		remote_respond(REMOTE_RESP_ERR, REMOTE_ERROR_WRONGLEN);
+-		return;
+-	}
+-
+-	/* Check if this is a DP version packet and handle it if it is */
+-	if (packet->data[1] == REMOTE_DP_VERSION) {
+-		/* Check there are enough bytes for the request */
+-		if (packet->size == 4U) {
+-			/* Extract the new version information into the DP */
+-			remote_dp.version = hex_string_to_num(2U, packet->data + 2U);
+-			remote_respond(REMOTE_RESP_OK, 0);
+-		} else
+-			/* There weren't enough bytes, so tell the host and get out of here */
+-			remote_respond(REMOTE_RESP_ERR, REMOTE_ERROR_WRONGLEN);
+-		return;
+-	}
+-	/* Check if this is a DP targetsel packet and handle it if it is */
+-	if (packet->data[1] == REMOTE_DP_TARGETSEL) {
+-		/* Check if there are enough bytes for the request */
+-		if (packet->size == 10U) {
+-			/* Extract the new targetsel information into the DP */
+-			remote_dp.targetsel = hex_string_to_num(8U, packet->data + 2U);
+-			remote_respond(REMOTE_RESP_OK, 0);
+-		} else
+-			/* There weren't enough bytes, so tell the host and get out of here */
+-			remote_respond(REMOTE_RESP_ERR, REMOTE_ERROR_WRONGLEN);
+-		return;
+-	}
+-
+-	/* Our shortest ADIv5 packet is 8 bytes long, check that we have at least that */
+-	if (packet->size < 8U) {
+-		remote_respond(REMOTE_RESP_PARERR, 0);
+-		return;
+-	}
+-
+-	/* Check if this is actually an ADIv6 acceleration packet and dispatch */
+-	if (packet->data[1] == REMOTE_ADIV6_PACKET) {
+-		remote_packet_process_adiv6(packet);
+-		return;
+-	}
+-
+-	/* Set up the DP and a fake AP structure to perform the access with */
+-	remote_dp.dev_index = hex_string_to_num(2, packet->data + 2);
+-	remote_dp.fault = 0U;
+-	adiv5_access_port_s remote_ap;
+-	remote_ap.apsel = hex_string_to_num(2, packet->data + 4);
+-	remote_ap.dp = &remote_dp;
+-
+-	SET_IDLE_STATE(0);
+-	switch (packet->data[1]) {
+-	/* DP access commands */
+-	case REMOTE_DP_READ: { /* Ad = Read from DP register */
+-		/* Grab the address to read from and try to perform the access */
+-		const uint16_t addr = hex_string_to_num(4, packet->data + 6);
+-		const uint32_t data =
+-			adiv5_dp_read(&remote_dp, (addr & REMOTE_ADIV5_APnDP ? ADIV5_APnDP : 0U) | (addr & 0x00ffU));
+-		remote_adiv5_respond(&data, 4U);
+-		break;
+-	}
+-	/* Raw access comands */
+-	case REMOTE_ADIV5_RAW_ACCESS: { /* AR = Perform a raw ADIv5 access */
+-		/* Grab the address to perform an access against and the value to work with */
+-		const uint16_t addr = hex_string_to_num(4, packet->data + 6);
+-		const uint32_t value = hex_string_to_num(8, packet->data + 10);
+-		/* Try to perform the access using the AP selection value as R/!W */
+-		const uint32_t data = adiv5_dp_low_access(
+-			&remote_dp, remote_ap.apsel, (addr & REMOTE_ADIV5_APnDP ? ADIV5_APnDP : 0U) | (addr & 0x00ffU), value);
+-		remote_adiv5_respond(&data, 4U);
+-		break;
+-	}
+-	/* AP access commands */
+-	case REMOTE_AP_READ: { /* Aa = Read from AP register */
+-		/* Grab the AP address to read from and try to perform the access */
+-		const uint16_t addr = hex_string_to_num(4, packet->data + 6);
+-		const uint32_t data =
+-			adiv5_ap_read(&remote_ap, (addr & REMOTE_ADIV5_APnDP ? ADIV5_APnDP : 0U) | (addr & 0x00ffU));
+-		remote_adiv5_respond(&data, 4U);
+-		break;
+-	}
+-	case REMOTE_AP_WRITE: { /* AA = Write to AP register */
+-		/* Grab the AP address to write to and the data to write then try to perform the access */
+-		const uint16_t addr = hex_string_to_num(4, packet->data + 6);
+-		const uint32_t value = hex_string_to_num(8, packet->data + 10);
+-		adiv5_ap_write(&remote_ap, (addr & REMOTE_ADIV5_APnDP ? ADIV5_APnDP : 0U) | (addr & 0x00ffU), value);
+-		remote_adiv5_respond(NULL, 0U);
+-		break;
+-	}
+-	/* Memory access commands */
+-	case REMOTE_MEM_READ: { /* Am = Read from memory */
+-		/* Grab the CSW value to use in the access */
+-		remote_ap.csw = hex_string_to_num(8, packet->data + 6);
+-		/* Grab the start address for the read */
+-		const target_addr64_t address = hex_string_to_num(16, packet->data + 14U);
+-		/* And how many bytes to read, validating it for buffer overflows */
+-		const uint32_t length = hex_string_to_num(8, packet->data + 30U);
+-		/* NB: Hex encoding on the response data halfs the available buffer capacity */
+-		if (length > (GDB_PACKET_BUFFER_SIZE - REMOTE_ADIV5_MEM_READ_LENGTH) >> 1U) {
+-			remote_respond(REMOTE_RESP_PARERR, 0);
+-			break;
+-		}
+-		/* Get the aligned packet buffer to reuse for the data read */
+-		void *data = gdb_packet_buffer();
+-		/* Perform the read and send back the results */
+-		adiv5_mem_read(&remote_ap, data, address, length);
+-		remote_adiv5_respond(data, length);
+-		break;
+-	}
+-	case REMOTE_MEM_WRITE: { /* AM = Write to memory */
+-		/* Grab the CSW value to use in the access */
+-		remote_ap.csw = hex_string_to_num(8, packet->data + 6);
+-		/* Grab the alignment for the access */
+-		const align_e align = hex_string_to_num(2, packet->data + 14U);
+-		/* Grab the start address for the write */
+-		const target_addr64_t address = hex_string_to_num(16, packet->data + 16U);
+-		/* And how many bytes to read, validating it for buffer overflows */
+-		const uint32_t length = hex_string_to_num(8, packet->data + 32U);
+-		/* NB: Hex encoding on the response data halfs the available buffer capacity */
+-		if (length > (GDB_PACKET_BUFFER_SIZE - REMOTE_ADIV5_MEM_WRITE_LENGTH) >> 1U) {
+-			remote_respond(REMOTE_RESP_PARERR, 0);
+-			break;
+-		}
+-		/* Validate the alignment is suitable */
+-		if (length & ((1U << align) - 1U)) {
+-			remote_respond(REMOTE_RESP_PARERR, 0);
+-			break;
+-		}
+-		/* Get the aligned packet buffer to reuse for the data to write */
+-		void *data = gdb_packet_buffer();
+-		/* And decode the data from the packet into it */
+-		unhexify(data, packet->data + 40U, length);
+-		/* Perform the write and report success/failures */
+-		adiv5_mem_write_aligned(&remote_ap, address, data, length, align);
+-		remote_adiv5_respond(NULL, 0);
+-		break;
+-	}
+-
+-	default:
+-		remote_respond(REMOTE_RESP_ERR, REMOTE_ERROR_UNRECOGNISED);
+-		break;
+-	}
+-	SET_IDLE_STATE(1);
+-}
+-
+-static void remote_packet_process_adiv6(gdb_packet_s *const packet)
+-{
+-	/* Our shortest ADIv5 packet is 15 bytes long, check that we have at least that */
+-	if (packet->size < 15U) {
+-		remote_respond(REMOTE_RESP_PARERR, 0);
+-		return;
+-	}
+-
+-	/*
+-	 * This faked ADIv6 DP structure holds the currently used low-level implementation functions (SWD vs JTAG)
+-	 * and basic DP state for remote protocol requests made. This mirrors the ADIv5 version of this structure
+-	 * so our faked AP can do the right thing.
+-	 */
+-	adiv5_debug_port_s dp = remote_dp;
+-	dp.ap_read = adiv6_ap_reg_read;
+-	dp.ap_write = adiv6_ap_reg_write;
+-
+-	/* Set up the DP and a fake AP structure to perform the access with */
+-	remote_dp.dev_index = hex_string_to_num(2, packet->data + 3);
+-	remote_dp.fault = 0U;
+-	adiv6_access_port_s remote_ap;
+-	remote_ap.ap_address = hex_string_to_num(16, packet->data + 5);
+-	remote_ap.base.dp = &dp;
+-
+-	SET_IDLE_STATE(0);
+-	switch (packet->data[2]) {
+-	/* AP access commands */
+-	case REMOTE_AP_READ: { /* A6a = Read from APv2 register */
+-		/* Grab the AP address to read from and try to perform the access */
+-		const uint16_t addr = hex_string_to_num(4, packet->data + 21);
+-		const uint32_t data = adiv5_ap_read(&remote_ap.base, addr);
+-		remote_adiv5_respond(&data, 4U);
+-		break;
+-	}
+-	case REMOTE_AP_WRITE: { /* A6A = Write to APv2 register */
+-		/* Grab the AP address to write to and the data to write then try to perform the access */
+-		const uint16_t addr = hex_string_to_num(4, packet->data + 21);
+-		const uint32_t value = hex_string_to_num(8, packet->data + 25);
+-		adiv5_ap_write(&remote_ap.base, addr, value);
+-		remote_adiv5_respond(NULL, 0U);
+-		break;
+-	}
+-	/* Memory access commands */
+-	case REMOTE_MEM_READ: { /* Am = Read from memory */
+-		/* Grab the CSW value to use in the access */
+-		remote_ap.base.csw = hex_string_to_num(8, packet->data + 21);
+-		/* Grab the start address for the read */
+-		const target_addr64_t address = hex_string_to_num(16, packet->data + 29U);
+-		/* And how many bytes to read, validating it for buffer overflows */
+-		const uint32_t length = hex_string_to_num(8, packet->data + 45U);
+-		/* NB: Hex encoding on the response data halfs the available buffer capacity */
+-		if (length > (GDB_PACKET_BUFFER_SIZE - REMOTE_ADIV6_MEM_READ_LENGTH) >> 1U) {
+-			remote_respond(REMOTE_RESP_PARERR, 0);
+-			break;
+-		}
+-		/* Get the aligned packet buffer to reuse for the data read */
+-		void *data = gdb_packet_buffer();
+-		/* Perform the read and send back the results */
+-		adiv5_mem_read(&remote_ap.base, data, address, length);
+-		remote_adiv5_respond(data, length);
+-		break;
+-	}
+-	case REMOTE_MEM_WRITE: { /* AM = Write to memory */
+-		/* Grab the CSW value to use in the access */
+-		remote_ap.base.csw = hex_string_to_num(8, packet->data + 21);
+-		/* Grab the alignment for the access */
+-		const align_e align = hex_string_to_num(2, packet->data + 29U);
+-		/* Grab the start address for the write */
+-		const target_addr64_t address = hex_string_to_num(16, packet->data + 31U);
+-		/* And how many bytes to read, validating it for buffer overflows */
+-		const uint32_t length = hex_string_to_num(8, packet->data + 47U);
+-		/* NB: Hex encoding on the request data halfs the available buffer capacity */
+-		if (length > (GDB_PACKET_BUFFER_SIZE - REMOTE_ADIV5_MEM_WRITE_LENGTH) >> 1U) {
+-			remote_respond(REMOTE_RESP_PARERR, 0);
+-			break;
+-		}
+-		/* Validate the alignment is suitable */
+-		if (length & ((1U << align) - 1U)) {
+-			remote_respond(REMOTE_RESP_PARERR, 0);
+-			break;
+-		}
+-		/* Get the aligned packet buffer to reuse for the data to write */
+-		void *data = gdb_packet_buffer();
+-		/* And decode the data from the packet into it */
+-		unhexify(data, packet->data + 55U, length);
+-		/* Perform the write and report success/failures */
+-		adiv5_mem_write_aligned(&remote_ap.base, address, data, length, align);
+-		remote_adiv5_respond(NULL, 0);
+-		break;
+-	}
+-
+-	default:
+-		remote_respond(REMOTE_RESP_ERR, REMOTE_ERROR_UNRECOGNISED);
+-		break;
+-	}
+-
+-	SET_IDLE_STATE(1);
+-}
+-
+ #if defined(CONFIG_RISCV_ACCEL) && CONFIG_RISCV_ACCEL == 1
+ /*
+  * This faked RISC-V DMI structure holds the currently used low-level implementation functions and basic DMI
+@@ -813,120 +467,6 @@ void remote_packet_process_riscv(gdb_packet_s *const packet)
+ }
+ #endif
+ 
+-static void remote_spi_respond(const bool result)
+-{
+-	if (result)
+-		/* If the request succeeded, send an OK response */
+-		remote_respond(REMOTE_RESP_OK, 0);
+-	else
+-		/* Otherwise signal that something went wrong with the request */
+-		remote_respond(REMOTE_RESP_ERR, REMOTE_ERROR_FAULT);
+-}
+-
+-void remote_packet_process_spi(gdb_packet_s *const packet)
+-{
+-	/* Our shortest SPI packet is 4 bytes long, check that we have at least that */
+-	if (packet->size < 4U) {
+-		remote_respond(REMOTE_RESP_PARERR, 0);
+-		return;
+-	}
+-
+-	const uint8_t spi_bus = hex_string_to_num(2, packet->data + 2);
+-
+-	switch (packet->data[1]) {
+-	/* Bus initialisation/deinitialisation commands */
+-	case REMOTE_SPI_BEGIN:
+-		remote_spi_respond(platform_spi_init(spi_bus));
+-		break;
+-	case REMOTE_SPI_END:
+-		remote_spi_respond(platform_spi_deinit(spi_bus));
+-		break;
+-	/* Selects a SPI device to talk with */
+-	case REMOTE_SPI_CHIP_SELECT:
+-		/* For this command, spi_bus above is actually the device ID + whether to select it */
+-		remote_spi_respond(platform_spi_chip_select(spi_bus));
+-		break;
+-	/* Performs a single byte SPI transfer */
+-	case REMOTE_SPI_TRANSFER: {
+-		const uint8_t data_in = hex_string_to_num(2, packet->data + 4);
+-		const uint8_t data_out = platform_spi_xfer(spi_bus, data_in);
+-		remote_respond(REMOTE_RESP_OK, data_out);
+-		break;
+-	}
+-	/* Perform a complete read cycle with a SPI Flash of up to 256 bytes */
+-	case REMOTE_SPI_READ: {
+-		/*
+-		 * Decode the device to talk to, what command to send, and the addressing
+-		 * and length information for that command
+-		 */
+-		const uint8_t spi_device = hex_string_to_num(2, packet->data + 4);
+-		const uint16_t command = hex_string_to_num(4, packet->data + 6);
+-		const target_addr_t address = hex_string_to_num(6, packet->data + 10);
+-		const size_t length = hex_string_to_num(4, packet->data + 16);
+-		/* Validate the data length isn't overly long */
+-		if (length > 256U) {
+-			remote_respond(REMOTE_RESP_PARERR, 0);
+-			break;
+-		}
+-		/* Get the aligned packet buffer to reuse for the data read */
+-		void *data = gdb_packet_buffer();
+-		/* Perform the read cycle */
+-		bmp_spi_read(spi_bus, spi_device, command, address, data, length);
+-		remote_respond_buf(REMOTE_RESP_OK, data, length);
+-		break;
+-	}
+-	/* Perform a complete write cycle with a SPI Flash of up to 256 bytes */
+-	case REMOTE_SPI_WRTIE: {
+-		/*
+-		 * Decode the device to talk to, what command to send, and the addressing
+-		 * and length information for that command
+-		 */
+-		const uint8_t spi_device = hex_string_to_num(2, packet->data + 4);
+-		const uint16_t command = hex_string_to_num(4, packet->data + 6);
+-		const target_addr_t address = hex_string_to_num(6, packet->data + 10);
+-		const size_t length = hex_string_to_num(4, packet->data + 16);
+-		/* Validate the data length isn't overly long */
+-		if (length > 256U) {
+-			remote_respond(REMOTE_RESP_PARERR, 0);
+-			break;
+-		}
+-		/* Get the aligned packet buffer to reuse for the data to write */
+-		void *data = gdb_packet_buffer();
+-		/* And decode the data from the packet into it */
+-		unhexify(data, packet->data + 20U, length);
+-		/* Perform the write cycle */
+-		bmp_spi_write(spi_bus, spi_device, command, address, data, length);
+-		remote_respond(REMOTE_RESP_OK, 0);
+-		break;
+-	}
+-	/* Get the JEDEC device ID for a Flash device */
+-	case REMOTE_SPI_CHIP_ID: {
+-		/* Decoder the device to talk to */
+-		const uint8_t spi_device = hex_string_to_num(2, packet->data + 4);
+-		/* Set up a suitable buffer for and read the JEDEC ID */
+-		spi_flash_id_s flash_id;
+-		bmp_spi_read(spi_bus, spi_device, SPI_FLASH_CMD_READ_JEDEC_ID, 0, &flash_id, sizeof(flash_id));
+-		/* Respond with the ID */
+-		remote_respond_buf(REMOTE_RESP_OK, &flash_id, sizeof(flash_id));
+-		break;
+-	}
+-	/* Run a command against a SPI Flash device */
+-	case REMOTE_SPI_RUN_COMMAND: {
+-		/* Decode the device to talk to, what command to send, and the addressing information for that command */
+-		const uint8_t spi_device = hex_string_to_num(2, packet->data + 4);
+-		const uint16_t command = hex_string_to_num(4, packet->data + 6);
+-		const target_addr_t address = hex_string_to_num(6, packet->data + 10);
+-		/* Execute the command and signal success */
+-		bmp_spi_run_command(spi_bus, spi_device, command, address);
+-		remote_respond(REMOTE_RESP_OK, 0);
+-		break;
+-	}
+-	default:
+-		remote_respond(REMOTE_RESP_ERR, REMOTE_ERROR_UNRECOGNISED);
+-		break;
+-	}
+-}
+-
+ void remote_packet_process(gdb_packet_s *const packet)
+ {
+ 	/* Check there's at least a request byte */
+@@ -935,10 +475,6 @@ void remote_packet_process(gdb_packet_s *const packet)
+ 		return;
+ 	}
+ 	switch (packet->data[0]) {
+-	case REMOTE_SWDP_PACKET:
+-		remote_packet_process_swd(packet);
+-		break;
+-
+ 	case REMOTE_JTAG_PACKET:
+ 		remote_packet_process_jtag(packet);
+ 		break;
+@@ -951,29 +487,12 @@ void remote_packet_process(gdb_packet_s *const packet)
+ 		remote_packet_process_high_level(packet);
+ 		break;
+ 
+-	case REMOTE_ADIV5_PACKET: {
+-		/* Setup an exception frame to try the ADIv5 operation in */
+-		TRY (EXCEPTION_ALL) {
+-			remote_packet_process_adiv5(packet);
+-		}
+-		CATCH () {
+-		/* Handle any exception we've caught by translating it into a remote protocol response */
+-		default:
+-			remote_respond(REMOTE_RESP_ERR, REMOTE_ERROR_EXCEPTION | ((uint64_t)exception_frame.type << 8U));
+-		}
+-		break;
+-	}
+-
+ #if defined(CONFIG_RISCV_ACCEL) && CONFIG_RISCV_ACCEL == 1
+ 	case REMOTE_RISCV_PACKET:
+ 		remote_packet_process_riscv(packet);
+ 		break;
+ #endif
+ 
+-	case REMOTE_SPI_PACKET:
+-		remote_packet_process_spi(packet);
+-		break;
+-
+ 	default: /* Oh dear, unrecognised, return an error */
+ 		remote_respond(REMOTE_RESP_ERR, REMOTE_ERROR_UNRECOGNISED);
+ 		break;
+diff --git a/src/target/adiv5_interface.h b/src/target/adiv5_interface.h
+index 9e00f2c4..cd9f3e07 100644
+--- a/src/target/adiv5_interface.h
++++ b/src/target/adiv5_interface.h
+@@ -151,6 +151,7 @@ static inline void adiv5_mem_write_aligned(adiv5_access_port_s *const ap, const
+ static inline uint32_t adiv5_dp_recoverable_access(adiv5_debug_port_s *dp, uint8_t rnw, uint16_t addr, uint32_t value)
+ {
+ 	const uint32_t result = dp->low_access(dp, rnw, addr, value);
++#if defined(CONFIG_SWD)
+ 	/* If the access results in the no-response response, retry after clearing the error state */
+ 	if (dp->fault == SWD_ACK_NO_RESPONSE) {
+ 		uint32_t response;
+@@ -164,6 +165,9 @@ static inline uint32_t adiv5_dp_recoverable_access(adiv5_debug_port_s *dp, uint8
+ 			raise_exception(EXCEPTION_ERROR, "SWD invalid ACK");
+ 		return response;
+ 	}
++#else
++	(void)result;
++#endif
+ 	return result;
+ }
+ 
+diff --git a/src/target/jtag_devs.c b/src/target/jtag_devs.c
+index 1ea1de0d..086ddaf8 100644
+--- a/src/target/jtag_devs.c
++++ b/src/target/jtag_devs.c
+@@ -30,14 +30,6 @@
+ #include "jtag_devs.h"
+ 
+ const jtag_dev_descr_s dev_descr[] = {
+-	{
+-		.idcode = 0x0ba00477U,
+-		.idmask = 0x0fff0fffU,
+-#if ENABLE_DEBUG == 1
+-		.descr = "ADIv5 JTAG-DP port.",
+-#endif
+-		.handler = adiv5_jtag_dp_handler,
+-	},
+ #if ENABLE_DEBUG == 1
+ 	{
+ 		.idcode = 0x00000477U,
+diff --git a/src/target/riscv32.c b/src/target/riscv32.c
+index 20d5a86d..5ddfb352 100644
+--- a/src/target/riscv32.c
++++ b/src/target/riscv32.c
+@@ -40,6 +40,55 @@
+ #include "gdb_packet.h"
+ #include "adiv5.h"
+ 
++/*
++ * Local copies of adiv5_unpack_data()/adiv5_pack_data() from adiv5.c: the ADIv5
++ * core is not built in this port (RISC-V JTAG DTM only), but riscv32.c still
++ * uses these two helpers to split/merge a 32-bit word into unaligned accesses.
++ */
++static void *riscv_unpack_data(void *const dest, const target_addr32_t src, const uint32_t data, const align_e align)
++{
++	switch (align) {
++	case ALIGN_8BIT: {
++		uint8_t value = (data >> (8U * (src & 3U))) & 0xffU;
++		memcpy(dest, &value, sizeof(value));
++		break;
++	}
++	case ALIGN_16BIT: {
++		uint16_t value = (data >> (8U * (src & 2U))) & 0xffffU;
++		memcpy(dest, &value, sizeof(value));
++		break;
++	}
++	case ALIGN_64BIT:
++	case ALIGN_32BIT:
++		memcpy(dest, &data, sizeof(data));
++		break;
++	}
++	return (uint8_t *)dest + (1U << align);
++}
++
++static const void *riscv_pack_data(
++	const target_addr32_t dest, const void *const src, uint32_t *const data, const align_e align)
++{
++	switch (align) {
++	case ALIGN_8BIT: {
++		uint8_t value;
++		memcpy(&value, src, sizeof(value));
++		*data = (uint32_t)value << (8U * (dest & 3U));
++		break;
++	}
++	case ALIGN_16BIT: {
++		uint16_t value;
++		memcpy(&value, src, sizeof(value));
++		*data = (uint32_t)value << (8U * (dest & 2U));
++		break;
++	}
++	default:
++		memcpy(data, src, sizeof(*data));
++		break;
++	}
++	return (const uint8_t *)src + (1U << align);
++}
++
+ /* This defines a match trigger that's for an address or data location */
+ #define RV32_MATCH_ADDR_DATA_TRIGGER 0x20000000U
+ /* A dmode of 1 restricts the writability of the trigger to debug mode only */
+@@ -378,7 +427,7 @@ static void riscv32_sysbus_mem_adjusted_read(riscv_hart_s *const hart, void *con
+ 		riscv32_sysbus_mem_native_read(
+ 			hart, &value, src & alignment, native_access_length, RV_MEM_ACCESS_16_BIT, native_access_length);
+ 		/* Having completed the read, unpack the data (we only care about a single byte in the access) */
+-		adiv5_unpack_data(dest, src, value, ALIGN_8BIT);
++		riscv_unpack_data(dest, src, value, ALIGN_8BIT);
+ 		break;
+ 	}
+ 	case RV_MEM_ACCESS_32_BIT: {
+@@ -392,10 +441,10 @@ static void riscv32_sysbus_mem_adjusted_read(riscv_hart_s *const hart, void *con
+ 		const uint8_t adjustment = access_length & (uint8_t)~1U;
+ 		/* Having completed the read, unpack the first part of the data (two bytes) */
+ 		if (adjustment)
+-			data = (char *)adiv5_unpack_data(data, src, value, ALIGN_16BIT);
++			data = (char *)riscv_unpack_data(data, src, value, ALIGN_16BIT);
+ 		/* Now unpack the remaining byte if necessary */
+ 		if (access_length & 1U)
+-			adiv5_unpack_data(data, src + adjustment, value, ALIGN_8BIT);
++			riscv_unpack_data(data, src + adjustment, value, ALIGN_8BIT);
+ 		break;
+ 	}
+ 	default:
+@@ -512,7 +561,7 @@ static void riscv32_sysbus_mem_adjusted_write(riscv_hart_s *const hart, const ta
+ 		 * Note that to get here we're doing a 2 byte access for 1 byte so we only care about a single byte
+ 		 * replacement. We also have to constrain the replacement to only happen in the lower 16 bits.
+ 		 */
+-		adiv5_pack_data(dest & ~2U, src, &widened_value, ALIGN_8BIT);
++		riscv_pack_data(dest & ~2U, src, &widened_value, ALIGN_8BIT);
+ 		value = (uint16_t)widened_value;
+ 		/* And finally write the new value back */
+ 		riscv32_sysbus_mem_native_write(
+@@ -530,10 +579,10 @@ static void riscv32_sysbus_mem_adjusted_write(riscv_hart_s *const hart, const ta
+ 		/* Figure out from the access length the initial pack and adjustment */
+ 		const uint8_t adjustment = access_length & (uint8_t)~1U;
+ 		if (adjustment)
+-			data = (const char *)adiv5_pack_data(dest, data, &value, ALIGN_16BIT);
++			data = (const char *)riscv_pack_data(dest, data, &value, ALIGN_16BIT);
+ 		/* Now pack the remaining byte if necessary */
+ 		if (access_length & 1)
+-			adiv5_pack_data(dest + adjustment, data, &value, ALIGN_8BIT);
++			riscv_pack_data(dest + adjustment, data, &value, ALIGN_8BIT);
+ 		/* And finally write the new value back */
+ 		riscv32_sysbus_mem_native_write(
+ 			hart, dest & alignment, &value, native_access_length, RV_MEM_ACCESS_32_BIT, native_access_length);
+diff --git a/src/target/riscv_debug.c b/src/target/riscv_debug.c
+index e17a5982..fa8ea976 100644
+--- a/src/target/riscv_debug.c
++++ b/src/target/riscv_debug.c
+@@ -37,7 +37,6 @@
+ #include "gdb_reg.h"
+ #include "riscv_debug.h"
+ #include "buffer_utils.h"
+-#include "semihosting.h"
+ 
+ #include <assert.h>
+ 
+@@ -622,9 +621,6 @@ static inline void riscv_dmi_unref(riscv_dmi_s *const dmi)
+ {
+ 	--dmi->ref_count;
+ 	if (!dmi->ref_count) {
+-		/* Check if the DMI bus is on an AP */
+-		if (dmi->dev_index == 0xffU && dmi->idle_cycles == 0xffU)
+-			adiv5_ap_unref(((riscv_dmi_ap_s *)dmi)->ap);
+ 		free(dmi);
+ 	}
+ }
+@@ -886,24 +882,6 @@ static target_addr64_t riscv_pc_read(riscv_hart_s *const hart)
+ 	return data;
+ }
+ 
+-static bool riscv_hostio_request(target_s *const target)
+-{
+-	/* Read out syscall number from a0/x10 and first argument from a1/x11 */
+-	riscv_hart_s *const hart = riscv_hart_struct(target);
+-	uint64_t syscall = 0U;
+-	riscv_csr_read(hart, RV_GPR_A0, &syscall);
+-	uint64_t a1 = 0U;
+-	riscv_csr_read(hart, RV_GPR_A1, &a1);
+-
+-	/* Hand off to the main semihosting implementation */
+-	const int32_t result = semihosting_request(target, syscall, a1);
+-
+-	/* Write the result back to the target */
+-	riscv_csr_write(hart, RV_GPR_A0, &result);
+-	/* Return if the request was in any way interrupted */
+-	return target->tc->interrupted;
+-}
+-
+ uint8_t riscv_mem_access_width(const riscv_hart_s *const hart, const target_addr_t address, const size_t length)
+ {
+ 	/* Grab the Hart's most maxmimally aligned possible write width */
+@@ -1175,21 +1153,8 @@ static target_halt_reason_e riscv_halt_poll(target_s *const target, target_addr6
+ 	status &= RV_DCSR_CAUSE_MASK;
+ 	/* Dispatch on the cause code */
+ 	switch (status) {
+-	case RV_HALT_CAUSE_EBREAK: {
+-		/* If we've hit a programmed breakpoint, check for semihosting call. */
+-		const target_addr64_t program_counter = riscv_pc_read(hart);
+-		uint32_t instructions[3] = {0};
+-		target_mem64_read(target, &instructions, program_counter - 4U, sizeof(instructions));
+-		/* A semihosting call is three consecutive uncompressed instructions: slli zero, zero 0x1f; ebreak, srai zero, zero, 7. */
+-		if (instructions[0] == RV_ENTRY_NOP && instructions[1] == RV_EBREAK && instructions[2] == RV_EXIT_NOP) {
+-			if (riscv_hostio_request(target))
+-				return TARGET_HALT_REQUEST;
+-
+-			riscv_halt_resume(target, false);
+-			return TARGET_HALT_RUNNING;
+-		}
++	case RV_HALT_CAUSE_EBREAK:
+ 		return TARGET_HALT_BREAKPOINT;
+-	}
+ 	case RV_HALT_CAUSE_TRIGGER:
+ 		/* XXX: Need to read out the triggers to find the one causing this, and grab the watch value */
+ 		return TARGET_HALT_BREAKPOINT;

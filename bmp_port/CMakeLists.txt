@@ -23,7 +23,39 @@
 
 set(PROJECT_ROOT   "${CMAKE_SOURCE_DIR}")
 set(BMP_PORT_DIR   "${CMAKE_CURRENT_SOURCE_DIR}")
-set(BMP_ROOT       "${PROJECT_ROOT}/third_party_components/blackmagic")
+set(BMP_SUBMODULE  "${PROJECT_ROOT}/third_party_components/blackmagic")
+
+if(BMP_SLIM)
+    # --------------------------------------------------------------------------
+    # Size-optimised build: work on a private copy of the blackmagic sources and
+    # apply patches/blackmagic-slim.patch to it, so the submodule stays pristine
+    # and can be updated at will.  The copy lives in the build directory and is
+    # refreshed whenever the patch changes.
+    # --------------------------------------------------------------------------
+    set(BMP_ROOT "${CMAKE_BINARY_DIR}/blackmagic-slim")
+    set(BMP_SLIM_PATCH "${PROJECT_ROOT}/patches/blackmagic-slim.patch")
+    if(NOT EXISTS "${BMP_SLIM_PATCH}")
+        message(FATAL_ERROR "BMP_SLIM=ON requires ${BMP_SLIM_PATCH}")
+    endif()
+
+    set(_bmp_stamp "${BMP_ROOT}/.patch-applied")
+    if(NOT EXISTS "${_bmp_stamp}" OR "${BMP_SLIM_PATCH}" IS_NEWER_THAN "${_bmp_stamp}")
+        message(STATUS "BMP_SLIM: refreshing patched copy in ${BMP_ROOT}")
+        file(REMOVE_RECURSE "${BMP_ROOT}")
+        file(COPY "${BMP_SUBMODULE}/src" DESTINATION "${BMP_ROOT}")
+        execute_process(
+            COMMAND patch -p1 -s -i "${BMP_SLIM_PATCH}"
+            WORKING_DIRECTORY "${BMP_ROOT}"
+            RESULT_VARIABLE _bmp_patch_result)
+        if(NOT _bmp_patch_result EQUAL 0)
+            message(FATAL_ERROR "BMP_SLIM: failed to apply ${BMP_SLIM_PATCH} (exit ${_bmp_patch_result})")
+        endif()
+        file(TOUCH "${_bmp_stamp}")
+    endif()
+else()
+    set(BMP_ROOT "${BMP_SUBMODULE}")
+endif()
+
 set(BMP_CORE_ROOT  "${BMP_ROOT}/src")
 
 # ------------------------------------------------------------------------------
@@ -65,7 +97,6 @@ set(bmp_port_srcs
     ${BMP_PORT_DIR}/timing_ch32.c
     # GPIO bit banged debug interfaces
     ${BMP_PORT_DIR}/jtag_port.c
-    ${BMP_PORT_DIR}/swdptap.c
     ${BMP_PORT_DIR}/jtagtap.c
     # USB: composite CDC ACM (GDB server + target UART) and the target UART
     ${BMP_PORT_DIR}/cdc_acm_dual.c
@@ -79,21 +110,38 @@ set(bmp_port_srcs
     ${BMP_PORT_DIR}/ch32v30x_it.c
 )
 
+if(NOT BMP_SLIM)
+    # SWD bit banging is only part of the full build; the slim build keeps JTAG
+    # (which is what RISC-V/HPM targets use) and drops the ADIv5/SWD stack.
+    list(APPEND bmp_port_srcs ${BMP_PORT_DIR}/swdptap.c)
+endif()
+
 # ------------------------------------------------------------------------------
 # blackmagic (Black Magic Debug) core and target drivers
 #
 # The core and the target drivers come from the blackmagic submodule;
 # everything the probe itself needs comes from bmp_port/.
 #
-# Deliberately NOT built:
+# Two configurations:
+#
+#   BMP_SLIM=OFF (default)  full build: ARM (Cortex-M/A/R), RISC-V, CH32/WCH and
+#                           HPM targets, unmodified blackmagic submodule.
+#   BMP_SLIM=ON             size-optimised on-board probe for RISC-V (RV32) HPM
+#                           parts only: no ARM, no SWD/ADIv5/ADIv6, no SPI
+#                           flash scan, no semihosting, and the BMP remote
+#                           protocol keeps only its JTAG/general/high-level/
+#                           RISC-V sub-protocols.  The submodule changes this
+#                           needs live in patches/blackmagic-slim.patch and are
+#                           applied to a private copy (see the top of this
+#                           file), so the submodule itself is never modified.
+#
+# Deliberately NOT built in either configuration:
 #   src/rtt.c                     this port has no RTT support
 #   src/platforms/**              vendored platform ports (bmp-v2, stlink, ...)
-#   src/target/*_generic.c        jtagtap_generic IS used, swdptap_generic is
-#                                 not (bmp_port/swdptap.c provides SWD)
+#   src/target/swdptap_generic.c  bmp_port/swdptap.c provides SWD
 #
-# The target list is trimmed to the families that matter here (Cortex-M/A/R,
-# RISC-V, CH32/WCH); enabling more of them is only a matter of adding files, but
-# the application partition is 96 KB.
+# The slim build relies on the weak no-op stubs in src/target/target_probe.c for
+# the probes it leaves out; the full build simply builds every driver.
 # ------------------------------------------------------------------------------
 set(blackmagic_incs
     ${BMP_CORE_ROOT}
@@ -101,6 +149,7 @@ set(blackmagic_incs
     ${BMP_CORE_ROOT}/target
 )
 
+# Core, generic target infrastructure and HPM support are shared.
 set(blackmagic_srcs
     # ---- core ---------------------------------------------------------------
     ${BMP_CORE_ROOT}/command.c
@@ -113,44 +162,54 @@ set(blackmagic_srcs
     ${BMP_CORE_ROOT}/morse.c
     ${BMP_CORE_ROOT}/remote.c
     ${BMP_CORE_ROOT}/timing.c
-    # ---- generic debug access / discovery ----------------------------------
-    ${BMP_CORE_ROOT}/target/adi.c
-    ${BMP_CORE_ROOT}/target/adiv5.c
-    ${BMP_CORE_ROOT}/target/adiv5_jtag.c
-    ${BMP_CORE_ROOT}/target/adiv5_swd.c
-    ${BMP_CORE_ROOT}/target/adiv6.c
-    ${BMP_CORE_ROOT}/target/arm_coresight_cti.c
-    ${BMP_CORE_ROOT}/target/cortex.c
-    ${BMP_CORE_ROOT}/target/cortexar.c
-    ${BMP_CORE_ROOT}/target/cortexm.c
+    # ---- target infrastructure ---------------------------------------------
     ${BMP_CORE_ROOT}/target/gdb_reg.c
-    ${BMP_CORE_ROOT}/target/icepick.c
     ${BMP_CORE_ROOT}/target/jtag_devs.c
     ${BMP_CORE_ROOT}/target/jtag_scan.c
     ${BMP_CORE_ROOT}/target/jtagtap_generic.c
-    ${BMP_CORE_ROOT}/target/onboard_flash.c
-    ${BMP_CORE_ROOT}/target/semihosting.c
-    ${BMP_CORE_ROOT}/target/sfdp.c
-    ${BMP_CORE_ROOT}/target/spi.c
     ${BMP_CORE_ROOT}/target/target.c
     ${BMP_CORE_ROOT}/target/target_flash.c
     ${BMP_CORE_ROOT}/target/target_probe.c
-    # ---- RISC-V targets ----------------------------------------------------
-    ${BMP_CORE_ROOT}/target/riscv_adi_dtm.c
-    ${BMP_CORE_ROOT}/target/riscv_debug.c
-    ${BMP_CORE_ROOT}/target/riscv_gateway_dtm.c
-    ${BMP_CORE_ROOT}/target/riscv_jtag_dtm.c
-    ${BMP_CORE_ROOT}/target/riscv32.c
-    ${BMP_CORE_ROOT}/target/riscv64.c
-    # ---- WCH / CH32 targets ------------------------------------------------
-    # ch32f1.c (Cortex-M3 CH32F1) is left out together with stm32f1.c: the
-    # application partition is 96 KB and this build is already at ~92%.  Add
-    # both back if CH32F1 support is needed.
-    ${BMP_CORE_ROOT}/target/ch32vx.c
-    ${BMP_CORE_ROOT}/target/ch579.c
-    # ---- HPM targets (the user's other workspace) --------------------------
+    # ---- HPM targets -------------------------------------------------------
     ${BMP_CORE_ROOT}/target/hpm_xpi.c
 )
+
+if(BMP_SLIM)
+    list(APPEND blackmagic_srcs
+        # ---- RISC-V targets (JTAG DTM only) --------------------------------
+        ${BMP_CORE_ROOT}/target/riscv_debug.c
+        ${BMP_CORE_ROOT}/target/riscv_jtag_dtm.c
+        ${BMP_CORE_ROOT}/target/riscv32.c
+    )
+else()
+    list(APPEND blackmagic_srcs
+        # ---- generic debug access / discovery ------------------------------
+        ${BMP_CORE_ROOT}/target/adi.c
+        ${BMP_CORE_ROOT}/target/adiv5.c
+        ${BMP_CORE_ROOT}/target/adiv5_jtag.c
+        ${BMP_CORE_ROOT}/target/adiv5_swd.c
+        ${BMP_CORE_ROOT}/target/adiv6.c
+        ${BMP_CORE_ROOT}/target/arm_coresight_cti.c
+        ${BMP_CORE_ROOT}/target/cortex.c
+        ${BMP_CORE_ROOT}/target/cortexar.c
+        ${BMP_CORE_ROOT}/target/cortexm.c
+        ${BMP_CORE_ROOT}/target/icepick.c
+        ${BMP_CORE_ROOT}/target/onboard_flash.c
+        ${BMP_CORE_ROOT}/target/semihosting.c
+        ${BMP_CORE_ROOT}/target/sfdp.c
+        ${BMP_CORE_ROOT}/target/spi.c
+        # ---- RISC-V targets ------------------------------------------------
+        ${BMP_CORE_ROOT}/target/riscv_adi_dtm.c
+        ${BMP_CORE_ROOT}/target/riscv_debug.c
+        ${BMP_CORE_ROOT}/target/riscv_gateway_dtm.c
+        ${BMP_CORE_ROOT}/target/riscv_jtag_dtm.c
+        ${BMP_CORE_ROOT}/target/riscv32.c
+        ${BMP_CORE_ROOT}/target/riscv64.c
+        # ---- WCH / CH32 targets --------------------------------------------
+        ${BMP_CORE_ROOT}/target/ch32vx.c
+        ${BMP_CORE_ROOT}/target/ch579.c
+    )
+endif()
 
 # ------------------------------------------------------------------------------
 # Application
