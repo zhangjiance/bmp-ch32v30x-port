@@ -91,25 +91,35 @@ void platform_max_frequency_set(const uint32_t frequency)
     const uint32_t requested = frequency ? frequency : 1U;
 
     /* If the bare loop is already slower than the request, add no delay. */
-    if ((uint64_t)USED_SWD_CYCLES * requested >= SystemCoreClock) {
+    /*
+     * Written as a division rather than "USED_SWD_CYCLES * requested >=
+     * SystemCoreClock" so the 64-bit division helper (__udivdi3, ~930 bytes)
+     * is not pulled in: the product would overflow 32 bits above ~268 MHz,
+     * and everything beyond that point is inside this early-out anyway.
+     */
+    if (requested >= (SystemCoreClock + USED_SWD_CYCLES - 1U) / USED_SWD_CYCLES) {
         target_clk_divider = UINT32_MAX;
         return;
     }
 
     /*
      * cycles per clock = USED_SWD_CYCLES + 2 * CYCLES_PER_CNT * target_clk_divider,
-     * so invert that for the requested frequency.  The result is bounded by the
-     * 1 Hz request above, i.e. by SystemCoreClock / (2 * CYCLES_PER_CNT).
+     * so invert that for the requested frequency.  Past the early-out both
+     * products fit in 32 bits: the numerator is below SystemCoreClock, and
+     * 2 * CYCLES_PER_CNT * requested is bounded by
+     * 2 * CYCLES_PER_CNT * SystemCoreClock / USED_SWD_CYCLES (54 MHz at
+     * 144 MHz), so no 64-bit arithmetic is needed.
      */
-    const uint64_t divider = ((uint64_t)SystemCoreClock - (uint64_t)USED_SWD_CYCLES * requested) /
-        (2U * (uint64_t)CYCLES_PER_CNT * requested);
-    target_clk_divider = (uint32_t)divider;
+    const uint32_t divider =
+        (SystemCoreClock - USED_SWD_CYCLES * requested) / (2U * CYCLES_PER_CNT * requested);
+    target_clk_divider = divider;
 }
 
 uint32_t platform_max_frequency_get(void)
 {
     if (target_clk_divider == UINT32_MAX)
         return SystemCoreClock / USED_SWD_CYCLES;
-    return (uint32_t)((uint64_t)SystemCoreClock /
-        ((uint64_t)USED_SWD_CYCLES + 2U * (uint64_t)CYCLES_PER_CNT * target_clk_divider));
+    /* target_clk_divider is bounded by SystemCoreClock / (2 * CYCLES_PER_CNT),
+     * so the divisor stays below SystemCoreClock + 1 and fits in 32 bits. */
+    return SystemCoreClock / (USED_SWD_CYCLES + 2U * CYCLES_PER_CNT * target_clk_divider);
 }
